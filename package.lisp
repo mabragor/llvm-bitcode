@@ -1,5 +1,7 @@
 ;;;; package.lisp
 
 (defpackage #:llvm-bitcode
-  (:use #:cl))
+  (:use #:cl #:iterate #:cl-itertools #:bit-smasher))
+
+
 
