@@ -10,7 +10,8 @@
   :author "Alexandr Popolitov <popolit@gmail.com>"
   :license "MIT"
   :version "0.1"
-  :depends-on (#:iterate #:cl-itertools #:fast-io #:defmacro-enhance #:bit-smasher #:quasiquote-2.0)
+  :depends-on (#:iterate #:cl-itertools #:fast-io #:defmacro-enhance
+			 #:bit-smasher #:quasiquote-2.0 #:cl-interpol)
   :serial t
   :components ((:file "package")
                (:file "llvm-bitcode")))
