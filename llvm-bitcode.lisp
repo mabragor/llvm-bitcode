@@ -11,6 +11,8 @@
 
 (defparameter abbrev-id-width 2)
 
+(defparameter abbrev-record-handlers (make-hash-table :test #'equal))
+
 (define-condition llvm-bitcode-read-error (error simple-condition) ())
 
 (defmacro with-yield-dispatch ((&rest handlers) &body body)
@@ -44,8 +46,12 @@
 	       (align-32-bits ()
 		 ;; (format t "Aligning to 32 bits, bytes-read: ~a!~%" bytes-read)
 		 (iter (while (not (zerop bytes-read)))
-		       (read-byte!))))
-	(with-yield-dispatch (align-32-bits)
+		       (read-byte!)))
+	       (skip-32-bits ()
+		 (iter (for i from 1 to 4)
+		       (noerror-read-byte stream))))
+	;; TODO : more fast skipping of 32-bit chunks
+	(with-yield-dispatch (align-32-bits skip-32-bits)
 	  (iter outer (while t)
 		(let ((it (read-byte!)))
 		  (if (not it)
@@ -95,8 +101,11 @@
 	(cur-byte 0))
     (labels ((align-32-bits ()
 	       (setf offset bits-in-byte)
-	       (inext-or-error my-byte-reader :align-32-bits)))
-      (with-yield-dispatch (align-32-bits)
+	       (inext-or-error my-byte-reader :align-32-bits))
+	     (skip-32-bits ()
+	       (setf offset bits-in-byte)
+	       (inext-or-error my-byte-reader :skip-32-bits)))
+      (with-yield-dispatch (align-32-bits skip-32-bits)
 	(iter (while t)
 	      (let ((nbits (last-yield-value)))
 		(if (<= nbits (- bits-in-byte offset))
@@ -259,17 +268,80 @@
 (defconstant unabbrev-record-code 3)
 (defconstant first-application-abbrev-code 4)
 
+(defconstant blockinfo-block-id 0)
+(defconstant first-application-block-id 8)
+
+(defconstant blockinfo-code-setbid 1)
+(defconstant blockinfo-code-blockname 2)
+(defconstant blockinfo-code-setrecordname 3)
+
+(defmacro with-primitive-commands ((&rest commands) &body body)
+  "Yes, it deliberately injects CODE into BODY"
+  `(let ((code (read-fixint abbrev-id-width)))
+     (cond 
+       ,@(mapcar (lambda (x)
+		   `((equal ,(intern #?"$(x)-CODE") code)
+		     `(,,(intern (string x) "KEYWORD")
+			 ,(,(intern #?"READ-$(x)")))))
+		 commands)
+       (t (progn ,@body)))))
+
+(defun get-handler (code)
+  (let ((handler (gethash code abbrev-record-handlers)))
+    (or handler
+	(error 'llvm-bitcode-read-error "Unrecognized abbreviated record code: ~a" code))))
+
 (defun lexer-advance ()
   "On successful invocations returns primitives of the stream.
 They are used to modify reader's state on the higher level."
-  (macrolet ((primitive-commands (&rest commands)
-	       `(ecase (read-fixint abbrev-id-width)
-		  ,@(mapcar (lambda (x)
-			      `(,(intern #?"$(x)-CODE")
-				 `(,,(intern (string x) "KEYWORD")
-				     ,(,(intern #?"READ-$(x)")))))
-			    commands))))
-    (primitive-commands end-block block define-abbrev unabbrev-record)))
-    
-(defparameter *abbrev-env* nil)
+  (with-primitive-commands (end-block block define-abbrev unabbrev-record)
+    ;; handle defined abbrevs
+    `(:abbrev-record ((code . ,code) ,@(funcall (get-handler code))))))
+
+(defun skip-block (len-in-32-bits)
+  (iter (for i from 1 to len-in-32-bits)
+	(inext-or-error *bit-reader* :skip-32-bits)))
+	
+(defun parse-standard-block (form)
+  (cond ((equal blockinfo-block-id (cdr (assoc 'block-id form)))
+	 (progn (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
+		      cur-block
+		      ;; probably should set some more things here
+		      )
+		  (iter (while t)
+			(destructuring-bind (type form) (lexer-advance)
+			  (ecase type
+			    (:end-block (terminate))
+			    (:block (warn "subblock encountered inside BLOCKINFO block -- skipping")
+			      (skip-block (cdr (assoc 'block-len form))))
+			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form))))
+			    ((:unabbrev-record :abbrev-record)
+			     (ecase (cdr (assoc 'code form))
+			       (blockinfo-code-setbid (setf cur-block (get-block-struct (car (cdr (assoc 'fields form))))))
+			       (blockinfo-code-blockname (setf (name cur-block) (car (cdr (assoc 'fields form)))))
+			       (blockinfo-code-setrecordname (setf-record-name cur-block
+									       (car (cdr (assoc 'fields form)))
+									       (cadr (cdr (assoc 'fields form)))))))
+			    ))))
+		;; Because upper layer can't really fill BLOCKINFO blocks, we recurse just here
+		(parser-advance)))
+	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
+
+(defun parser-advance (&optional (recursive nil))
+  ;; Let's first assume that RECURSIVE is T -- we have some env around us
+  ;; Furthermore, we are, maybe, in some subblock.
+  (destructuring-bind (type form) (lexer-advance)
+    (ecase type
+      (:end-block ;; handle on the level above
+       `(:end-block nil))
+      (:block ;; set up env, recursively read all the records in the block
+	  (if (> first-application-block-id (cdr (assoc 'block-id form)))
+	      (parse-standard-block form)
+	      (parse-application-block form)))
+      (:define-abbrev ;; this has different meaning, depending on whether it's inside
+       ...)
+      ;; For above layers it's not important, was record abbreviated or not
+      (:unabbrev-record `(:record ,form))
+      (:abbrev-record `(:record ,form))))))
+
 
