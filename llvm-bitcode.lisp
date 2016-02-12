@@ -65,32 +65,35 @@
 	      
 (defmacro starting-bits ()
   ;; Ok, maybe this code is not optimal, but it's the first version ...
-  `(let ((it (bit-and (cur-byte) (bit- (lshift (bits<- 1) nbits) (bits<- 1)))))
-     (setf cur-byte (rshift cur-byte nbits))
-     (incf offset nbits)
-     it))
+  `(progn (format t "  About to read starting bits~%")
+	  (format t "Nbits: ~a" nbits)
+	  (if (zerop nbits) ; if we actually read nothing, don't load new byte
+	      #*
+	      (let ((it (bits<- (cur-byte) nbits)))
+		(setf cur-byte (rshift cur-byte nbits))
+		(incf offset nbits)
+		it))))
 
 (defmacro remaining-bits ()
-  `(let ((it (cons (cur-byte) ; the byte should already be zero-padded from the right -- nothing to truncate
-		   (- bits-in-byte offset)))) ; with this one we really should remember, how many bits did we read
-     (decf nbits (- bits-in-byte offset))
-     (setf offset bits-in-byte)
-     it))
+  `(progn (format t "  About to read remaining bits~%")
+	  (if (zerop nbits) ; if we actually read nothing, don't load new byte
+	      #*
+	      (let ((it (bits<- (cur-byte) (- bits-in-byte offset))))
+		(decf nbits (- bits-in-byte offset))
+		(setf offset bits-in-byte)
+		it))))
 
 (defmacro whole-byte ()
-  `(let ((it (cur-byte)))
-     (decf nbits bits-in-byte)
-     (setf offset bits-in-byte)
-     it))
+  `(progn (format t "  About to read whole byte~%")
+	  (let ((it (cur-byte)))
+	    (decf nbits bits-in-byte)
+	    (setf offset bits-in-byte)
+	    it)))
 
 (defun assemble-bit-chunks (lst)
-  (let ((res (bits<- 0)))
-    (iter (for elt in lst)
-	  (setf res (if (consp elt)
-			(bit+ (lshift res (cdr elt))
-			      (car elt))
-			(bit+ (lshift res bits-in-byte) elt))))
-    res))
+  (format t "  Assembling bit chunks: ~a~%" lst)
+  (apply #'concatenate (cons 'bit-vector
+			     lst)))
 	      
 (defiter bit-reader (stream)
   "We always return bit-vector with as much bits, as requested -- without 0-padding from the left"
@@ -106,38 +109,38 @@
       (with-yield-dispatch (align-32-bits skip-32-bits)
 	(iter (while t)
 	      (let ((nbits (last-yield-value)))
-		(if (<= nbits (- bits-in-byte offset))
+		(format t "Nbits1: ~a offset: ~a~%" nbits offset)
+		(if (<= nbits (- bits-in-byte (mod offset bits-in-byte)))
 		    (yield! (bits<- (starting-bits)
 				    nbits))
 		    (let ((res (list (remaining-bits))))
 		      (iter (while (>= nbits bits-in-byte))
 			    (push (whole-byte) res))
 		      (push (starting-bits) res)
-		      (yield! (bits<- (assemble-bit-chunks res)
-				      nbits))))))))))
+		      (yield! (assemble-bit-chunks res))))))))))
 
 (defparameter *bit-reader* nil)
 
-;; This low-level code is pretty much literal translation from BitstreamReader.cpp
+;; This low-level code was pretty much literal translation from BitstreamReader.cpp
+;; But now it's way more lispy and is like 2 times shorter =) I dunno about the speed though...
 
 (defun read-vbr (nbits)
-  (labels ((rec (acc bit-shift)
-	     (let* ((piece (inext-or-error *bit-reader* nbits))
-		    (acc (bit-ior acc (lshift (bit-and piece
-						       (bits<- (1- (ash 1 (1- nbits)))))
-					      bit-shift))))
-	       (if (not (zerop (int<- (bit-and piece (lshift (bits<- 1) (1- nbits))))))
-		   acc
-		   (rec acc (+ bit-shift (1- nbits)))))))
-    (int<- (rec #*0 0))))
+  (let (res)
+    (iter (for piece next (inext-or-error *bit-reader* nbits))
+	  (push (bits<- piece (1- nbits)) res)
+	  (if (equal #*0 (subseq piece 0 1))
+	      (terminate)))
+    (assemble-bit-chunks res)))
+      
 
 (defun read-bitcode-header ()
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
-    (if (not (equal (char-code #\b) it))
-	(error 'llvm-bitcode-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
+    (if (not (equal (char-code #\B) it))
+  	(error 'llvm-bitcode-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
-    (if (not (equal (char-code #\c) it))
-	(error 'llvm-bitcode-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it))))
+    (if (not (equal (char-code #\C) it))
+  	(error 'llvm-bitcode-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it)))
+  :success)
   
 ;; TODO : actually implement also the wrapper format
 
@@ -329,20 +332,23 @@ They are used to modify reader's state on the higher level."
 	      ((eq :blob spec) #'read-blob)
 	      ((eq :char6 spec) #'read-char6)
 	      (t (error "Unknown atomic abbrev spec: ~a" spec)))
-	(cond ((eq :fixed (car spec)) (lambda ()
-					(read-fixint (cadr spec))))
-	      ((eq :vbr (car spec)) (lambda ()
-				      (read-vbr (cadr spec))))
-	      (t (error "Unknown consy abbrev spec: ~a" spec))))))
+	(destructuring-bind (type arg) spec
+	  (ecase type
+	    (:fixed (lambda ()
+		      (read-fixint arg)))
+	    (:vbr (lambda ()
+		    (read-vbr arg)))
+	    (:literal (lambda ()
+			arg)))))))
     
 
 (defun compile-handler-from-spec (handler-spec)
   (let ((spec-iter (mk-iter handler-spec)))
     (compile nil
 	     `(lambda ()
-		,@(iter (while t)
-			(collect (handler-case (mk-reader-thunk spec-iter)
-				   (stop-iteration () (terminate)))))))))
+		(list ,@(iter (while t)
+			      (collect `(funcall ,(handler-case (mk-reader-thunk spec-iter)
+								(stop-iteration () (terminate)))))))))))
 
 (defun setf-record-handler (block handler-spec)
   (with-slots (next-abbrev-code record-handlers) block
@@ -384,13 +390,17 @@ They are used to modify reader's state on the higher level."
 			      (skip-block (cdr (assoc 'block-len form))))
 			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form))))
 			    ((:unabbrev-record :abbrev-record)
-			     (ecase (cdr (assoc 'code form))
-			       ;; TODO : what if CUR-BLOCK is still NULL?
-			       (blockinfo-code-setbid (setf cur-block (get-block-env (car (cdr (assoc 'fields form))))))
-			       (blockinfo-code-blockname (setf (name cur-block) (car (cdr (assoc 'fields form)))))
-			       (blockinfo-code-setrecordname (setf-record-name cur-block
-									       (car (cdr (assoc 'fields form)))
-									       (cadr (cdr (assoc 'fields form)))))))
+			     ;; TODO : what if CUR-BLOCK is still NULL?
+			     (let ((it (cdr (assoc 'code form))))
+			       (cond ((equal blockinfo-code-setbid it)
+				      (setf cur-block (get-block-env (car (cdr (assoc 'fields form))))))
+				     ((equal blockinfo-code-blockname it)
+				      (setf (name cur-block) (car (cdr (assoc 'fields form)))))
+				     ((equal blockinfo-code-setrecordname it)
+				      (setf-record-name cur-block
+							(car (cdr (assoc 'fields form)))
+							(cadr (cdr (assoc 'fields form)))))
+				     (t (error 'llvm-bitcode-read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
 			    ))))
 		nil))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
@@ -432,3 +442,12 @@ They are used to modify reader's state on the higher level."
 	(error 'llvm-bitcode-read-error "~a encountered on the top level" type))))
 
 
+
+(defun read-bc-file (fname)
+  (with-open-file (stream fname :element-type `(unsigned-byte ,bits-in-byte))
+    (let ((*bit-reader* (bit-reader stream)))
+      (read-bitcode-header)
+      (read-magic-number)
+      (iter (while t)
+	    (collect (handler-case (parser-advance)
+		       (stop-iteration () (terminate))))))))
