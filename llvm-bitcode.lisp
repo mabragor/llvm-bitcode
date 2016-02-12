@@ -13,6 +13,11 @@
 
 (define-condition llvm-bitcode-read-error (error simple-condition) ())
 
+(defmacro read-error (format &rest args)
+  `(error 'llvm-bitcode-read-error
+	  :format-control ,format
+	  :format-arguments (list ,@args)))
+
 (defmacro with-yield-dispatch ((&rest handlers) &body body)
   "We redefine YIELD so that it smartly handles special KWD arguments"
   `(macrolet ((yield! (form)
@@ -65,8 +70,8 @@
 	      
 (defmacro starting-bits ()
   ;; Ok, maybe this code is not optimal, but it's the first version ...
-  `(progn (format t "  About to read starting bits~%")
-	  (format t "Nbits: ~a" nbits)
+  `(progn ;; (format t "  About to read starting bits~%")
+	  ;; (format t "Nbits: ~a" nbits)
 	  (if (zerop nbits) ; if we actually read nothing, don't load new byte
 	      #*
 	      (let ((it (bits<- (cur-byte) nbits)))
@@ -75,7 +80,7 @@
 		it))))
 
 (defmacro remaining-bits ()
-  `(progn (format t "  About to read remaining bits~%")
+  `(progn ;; (format t "  About to read remaining bits~%")
 	  (if (zerop nbits) ; if we actually read nothing, don't load new byte
 	      #*
 	      (let ((it (bits<- (cur-byte) (- bits-in-byte offset))))
@@ -84,14 +89,14 @@
 		it))))
 
 (defmacro whole-byte ()
-  `(progn (format t "  About to read whole byte~%")
+  `(progn ;; (format t "  About to read whole byte~%")
 	  (let ((it (cur-byte)))
 	    (decf nbits bits-in-byte)
 	    (setf offset bits-in-byte)
 	    it)))
 
 (defun assemble-bit-chunks (lst)
-  (format t "  Assembling bit chunks: ~a~%" lst)
+  ;; (format t "  Assembling bit chunks: ~a~%" lst)
   (apply #'concatenate (cons 'bit-vector
 			     lst)))
 	      
@@ -109,7 +114,7 @@
       (with-yield-dispatch (align-32-bits skip-32-bits)
 	(iter (while t)
 	      (let ((nbits (last-yield-value)))
-		(format t "Nbits1: ~a offset: ~a~%" nbits offset)
+		;; (format t "Nbits1: ~a offset: ~a~%" nbits offset)
 		(if (<= nbits (- bits-in-byte (mod offset bits-in-byte)))
 		    (yield! (bits<- (starting-bits)
 				    nbits))
@@ -136,10 +141,10 @@
 (defun read-bitcode-header ()
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
     (if (not (equal (char-code #\B) it))
-  	(error 'llvm-bitcode-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
+  	(read-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
     (if (not (equal (char-code #\C) it))
-  	(error 'llvm-bitcode-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it)))
+  	(read-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it)))
   :success)
   
 ;; TODO : actually implement also the wrapper format
@@ -150,7 +155,7 @@
     (when expected-number
       (let ((expected-number (mapcar #'bits<- expected-number)))
 	(if (not (equal expected-number res))
-	    (error 'llvm-bitcode-error "Expected magic number ~a, but got: ~a" expected-number res))))
+	    (read-error "Expected magic number ~a, but got: ~a" expected-number res))))
     res))
   
 (defun decode-char6 (code)
@@ -161,7 +166,7 @@
 	  ((< it (+ 26 26 10)) (code-char (+ (char-code #\0) (- it 26 26))))
 	  ((= it 62) #\.)
 	  ((= it 63) #\_)
-	  (t (error 'llvm-bitcode-error "Failed to decode ~a as char6" it)))))
+	  (t (read-error "Failed to decode ~a as char6" it)))))
 
 (defun encode-char6 (char)
   (bits<- (cond ((char= char #\.) 62)
@@ -176,7 +181,7 @@
 			     ((and (>= code (char-code #\0))
 				   (<= code (char-code #\9)))
 			      (+ (- code (char-code #\A)) 26 26))
-			     (t (error 'llvm-bitcode-error "Don't know how to encode ~a as char6" char))))))
+			     (t (read-error "Don't know how to encode ~a as char6" char))))))
 	  6))
 
 (defun bits<- (smth &optional length)
@@ -207,7 +212,7 @@
 	  ((equal 3 op) :array)
 	  ((equal 4 op) :char6)
 	  ((equal 5 op) :blob)
-	  (t (error 'llvm-bitcode-error "Don't know how to read this abbrev op:~a" op))))))
+	  (t (read-error "Don't know how to read this abbrev op:~a" op))))))
 	
 
 
@@ -287,12 +292,15 @@
 		 commands)
        (t (progn ,@body)))))
 
+;; TODO : patch QUASIQUOTE-2.0, so that it actually understands .,
+
 (defun lexer-advance ()
   "On successful invocations returns primitives of the stream.
 They are used to modify reader's state on the higher level."
   (with-primitive-commands (end-block block define-abbrev unabbrev-record)
     ;; handle defined abbrevs
-    `(:abbrev-record ((code . ,code) ,@(funcall (get-handler code))))))
+    `(:abbrev-record (,(cons 'code code)
+		       ,@(funcall (get-handler code))))))
 
 (defun skip-block (len-in-32-bits)
   (iter (for i from 1 to len-in-32-bits)
@@ -326,7 +334,7 @@ They are used to modify reader's state on the higher level."
   (let ((spec (inext-or-error spec-iter)))
     (if (symbolp spec)
 	(cond ((eq :array spec) (let ((elt-reader (handler-case (mk-reader-thunk spec-iter)
-						    (stop-iteration () (error 'llvm-bitcode-read-error "Spec finished before array was complete")))))
+						    (stop-iteration () (read-error "Spec finished before array was complete")))))
 				  (lambda ()
 				    (read-array elt-reader))))
 	      ((eq :blob spec) #'read-blob)
@@ -374,7 +382,7 @@ They are used to modify reader's state on the higher level."
 (defun get-handler (code)
   (or (gethash code (slot-value tmp-env 'record-handlers))
       (gethash code (slot-value block-env 'record-handlers))
-      (error 'llvm-bitcode-read-error "Unrecognized abbreviated record code: ~a" code)))
+      (read-error "Unrecognized abbreviated record code: ~a" code)))
 
 (defun parse-standard-block (form)
   (cond ((equal blockinfo-block-id (cdr (assoc 'block-id form)))
@@ -388,7 +396,8 @@ They are used to modify reader's state on the higher level."
 			    (:end-block (terminate))
 			    (:block (warn "subblock encountered inside BLOCKINFO block -- skipping")
 			      (skip-block (cdr (assoc 'block-len form))))
-			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form))))
+			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form)))
+				nil)
 			    ((:unabbrev-record :abbrev-record)
 			     ;; TODO : what if CUR-BLOCK is still NULL?
 			     (let ((it (cdr (assoc 'code form))))
@@ -400,7 +409,7 @@ They are used to modify reader's state on the higher level."
 				      (setf-record-name cur-block
 							(car (cdr (assoc 'fields form)))
 							(cadr (cdr (assoc 'fields form)))))
-				     (t (error 'llvm-bitcode-read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
+				     (t (read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
 			    ))))
 		nil))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
@@ -416,21 +425,23 @@ They are used to modify reader's state on the higher level."
   (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
 	 (block-env (get-block-env (cdr (assoc 'block-id form))))
 	 (tmp-env (make-tmp-env block-env)))
-    (remove-if-not #'identity
-		   (iter (while t)
-			 (collect (destructuring-bind (type form)
-				      ;; This HANDLER-CASE does automatic closing of blocks at the end of the stream
-				      (handler-case (lexer-advance)
-					(stop-iteration () (terminate)))
-				    (ecase type
-				      (:end-block (terminate))
-				      (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
-						  (parse-standard-block form)
-						  (parse-application-block form)))
-				      (:define-abbrev (setf-record-handler tmp-env (cdr (assoc 'specs form))))
-				      ((:unabbrev-record :abbrev-record)
-				       `(:record ,form))
-				      )))))))
+    (list :block (cdr (assoc 'block-id form))
+	  (remove-if-not #'identity
+			 (iter (while t)
+			       (collect (destructuring-bind (type form)
+					    ;; This HANDLER-CASE does automatic closing of blocks at the end of the stream
+					    (handler-case (lexer-advance)
+					      (stop-iteration () (terminate)))
+					  (ecase type
+					    (:end-block (terminate))
+					    (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
+							(parse-standard-block form)
+							(parse-application-block form)))
+					    (:define-abbrev (setf-record-handler tmp-env (cdr (assoc 'specs form)))
+						nil)
+					    ((:unabbrev-record :abbrev-record)
+					     `(:record ,form))
+					    ))))))))
 
 (defun parser-advance ()
   "This is just the toplevel wrapper around parse block"
@@ -439,7 +450,7 @@ They are used to modify reader's state on the higher level."
 	(if (> first-application-block-id (cdr (assoc 'block-id form)))
 	    (parse-standard-block form)
 	    (parse-application-block form))
-	(error 'llvm-bitcode-read-error "~a encountered on the top level" type))))
+	(read-error "~a encountered on the top level" type))))
 
 
 
@@ -449,5 +460,7 @@ They are used to modify reader's state on the higher level."
       (read-bitcode-header)
       (read-magic-number)
       (iter (while t)
-	    (collect (handler-case (parser-advance)
-		       (stop-iteration () (terminate))))))))
+	    (collect (let ((it (handler-case (parser-advance)
+				 (stop-iteration () (terminate)))))
+		       (format t "Read a new form: ~a~%" it)
+		       it))))))
