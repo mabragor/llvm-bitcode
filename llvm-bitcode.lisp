@@ -301,7 +301,74 @@ They are used to modify reader's state on the higher level."
 (defun skip-block (len-in-32-bits)
   (iter (for i from 1 to len-in-32-bits)
 	(inext-or-error *bit-reader* :skip-32-bits)))
-	
+
+(defclass block-env ()
+  ((id :initform (error "Block ID is mandatory.") :initarg :id)
+   (name :initarg :name :accessor name)
+   (next-abbrev-code :initform first-application-abbrev-code)
+   (record-handlers :initform (make-hash-table :test #'equal))
+   (record-names :initform (make-hash-table :test #'equal))))
+
+
+(defun read-array (elt-reader)
+  ;; TODO : actually assemble all the numerical constants into one place -- in case of future change
+  (let ((len (read-vbr 6)))
+    (list :array
+	  (iter (for i from 1 to len)
+		(collect (funcall elt-reader))))))
+
+(defun read-blob ()
+  (let ((len (read-vbr 6)))
+    (inext-or-error *bit-reader* :align-32-bits)
+    (let ((res (iter (for i from 1 to len)
+		     (read-fixint 8))))
+      (inext-or-error *bit-reader* :align-32-bits)
+      (list :blob res))))
+    
+
+(defun mk-reader-thunk (spec-iter)
+  (let ((spec (inext-or-error spec-iter)))
+    (if (symbolp spec)
+	(cond ((eq :array spec) (let ((elt-reader (handler-case (mk-reader-thunk spec-iter)
+						    (stop-iteration () (error 'llvm-bitcode-read-error "Spec finished before array was complete")))))
+				  (lambda ()
+				    (read-array elt-reader))))
+	      ((eq :blob spec) #'read-blob)
+	      ((eq :char6 spec) #'read-char6)
+	      (t (error "Unknown atomic abbrev spec: ~a" spec)))
+	(cond ((eq :fixed (car spec)) (lambda ()
+					(read-fixint (cadr spec))))
+	      ((eq :vbr (car spec)) (lambda ()
+				      (read-vbr (cadr spec))))
+	      (t (error "Unknown consy abbrev spec: ~a" spec))))))
+    
+
+(defun compile-handler-from-spec (handler-spec)
+  (let ((spec-iter (mk-iter handler-spec)))
+    (compile nil
+	     `(lambda ()
+		,@(iter (while t)
+			(collect (handler-case (mk-reader-thunk spec-iter)
+				   (stop-iteration () (terminate)))))))))
+
+(defun setf-record-handler (block handler-spec)
+  (with-slots (next-abbrev-code record-handlers) block
+    (let ((it (compile-handler-from-spec handler-spec)))
+      (setf (gethash next-abbrev-code record-handlers) it)
+      (incf next-abbrev-code)
+      it)))
+
+(defun setf-record-name (block id str)
+  (with-slots (record-names) block
+    (setf (gethash id record-names) str)))
+
+(defparameter block-envs (make-hash-table :test #'equal))
+
+(defun get-block-env (id)
+  (or (gethash id block-envs)
+      (setf (gethash id block-envs)
+	    (make-instance 'block-env :id id))))
+
 (defun parse-standard-block (form)
   (cond ((equal blockinfo-block-id (cdr (assoc 'block-id form)))
 	 (progn (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
@@ -317,7 +384,7 @@ They are used to modify reader's state on the higher level."
 			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form))))
 			    ((:unabbrev-record :abbrev-record)
 			     (ecase (cdr (assoc 'code form))
-			       (blockinfo-code-setbid (setf cur-block (get-block-struct (car (cdr (assoc 'fields form))))))
+			       (blockinfo-code-setbid (setf cur-block (get-block-env (car (cdr (assoc 'fields form))))))
 			       (blockinfo-code-blockname (setf (name cur-block) (car (cdr (assoc 'fields form)))))
 			       (blockinfo-code-setrecordname (setf-record-name cur-block
 									       (car (cdr (assoc 'fields form)))
@@ -327,21 +394,21 @@ They are used to modify reader's state on the higher level."
 		(parser-advance)))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
 
-(defun parser-advance (&optional (recursive nil))
-  ;; Let's first assume that RECURSIVE is T -- we have some env around us
-  ;; Furthermore, we are, maybe, in some subblock.
-  (destructuring-bind (type form) (lexer-advance)
-    (ecase type
-      (:end-block ;; handle on the level above
-       `(:end-block nil))
-      (:block ;; set up env, recursively read all the records in the block
-	  (if (> first-application-block-id (cdr (assoc 'block-id form)))
-	      (parse-standard-block form)
-	      (parse-application-block form)))
-      (:define-abbrev ;; this has different meaning, depending on whether it's inside
-       ...)
-      ;; For above layers it's not important, was record abbreviated or not
-      (:unabbrev-record `(:record ,form))
-      (:abbrev-record `(:record ,form))))))
+;; (defun parser-advance (&optional (recursive nil))
+;;   ;; Let's first assume that RECURSIVE is T -- we have some env around us
+;;   ;; Furthermore, we are, maybe, in some subblock.
+;;   (destructuring-bind (type form) (lexer-advance)
+;;     (ecase type
+;;       (:end-block ;; handle on the level above
+;;        `(:end-block nil))
+;;       (:block ;; set up env, recursively read all the records in the block
+;; 	  (if (> first-application-block-id (cdr (assoc 'block-id form)))
+;; 	      (parse-standard-block form)
+;; 	      (parse-application-block form)))
+;;       (:define-abbrev ;; this has different meaning, depending on whether it's inside
+;;        ...)
+;;       ;; For above layers it's not important, was record abbreviated or not
+;;       (:unabbrev-record `(:record ,form))
+;;       (:abbrev-record `(:record ,form))))))
 
 
