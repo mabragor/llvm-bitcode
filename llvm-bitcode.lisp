@@ -11,8 +11,6 @@
 
 (defparameter abbrev-id-width 2)
 
-(defparameter abbrev-record-handlers (make-hash-table :test #'equal))
-
 (define-condition llvm-bitcode-read-error (error simple-condition) ())
 
 (defmacro with-yield-dispatch ((&rest handlers) &body body)
@@ -286,11 +284,6 @@
 		 commands)
        (t (progn ,@body)))))
 
-(defun get-handler (code)
-  (let ((handler (gethash code abbrev-record-handlers)))
-    (or handler
-	(error 'llvm-bitcode-read-error "Unrecognized abbreviated record code: ~a" code))))
-
 (defun lexer-advance ()
   "On successful invocations returns primitives of the stream.
 They are used to modify reader's state on the higher level."
@@ -369,6 +362,14 @@ They are used to modify reader's state on the higher level."
       (setf (gethash id block-envs)
 	    (make-instance 'block-env :id id))))
 
+(defparameter block-env nil)
+(defparameter tmp-env nil)
+
+(defun get-handler (code)
+  (or (gethash code (slot-value tmp-env 'record-handlers))
+      (gethash code (slot-value block-env 'record-handlers))
+      (error 'llvm-bitcode-read-error "Unrecognized abbreviated record code: ~a" code)))
+
 (defun parse-standard-block (form)
   (cond ((equal blockinfo-block-id (cdr (assoc 'block-id form)))
 	 (progn (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
@@ -384,31 +385,50 @@ They are used to modify reader's state on the higher level."
 			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form))))
 			    ((:unabbrev-record :abbrev-record)
 			     (ecase (cdr (assoc 'code form))
+			       ;; TODO : what if CUR-BLOCK is still NULL?
 			       (blockinfo-code-setbid (setf cur-block (get-block-env (car (cdr (assoc 'fields form))))))
 			       (blockinfo-code-blockname (setf (name cur-block) (car (cdr (assoc 'fields form)))))
 			       (blockinfo-code-setrecordname (setf-record-name cur-block
 									       (car (cdr (assoc 'fields form)))
 									       (cadr (cdr (assoc 'fields form)))))))
 			    ))))
-		;; Because upper layer can't really fill BLOCKINFO blocks, we recurse just here
-		(parser-advance)))
+		nil))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
 
-;; (defun parser-advance (&optional (recursive nil))
-;;   ;; Let's first assume that RECURSIVE is T -- we have some env around us
-;;   ;; Furthermore, we are, maybe, in some subblock.
-;;   (destructuring-bind (type form) (lexer-advance)
-;;     (ecase type
-;;       (:end-block ;; handle on the level above
-;;        `(:end-block nil))
-;;       (:block ;; set up env, recursively read all the records in the block
-;; 	  (if (> first-application-block-id (cdr (assoc 'block-id form)))
-;; 	      (parse-standard-block form)
-;; 	      (parse-application-block form)))
-;;       (:define-abbrev ;; this has different meaning, depending on whether it's inside
-;;        ...)
-;;       ;; For above layers it's not important, was record abbreviated or not
-;;       (:unabbrev-record `(:record ,form))
-;;       (:abbrev-record `(:record ,form))))))
+
+(defun make-tmp-env (block-env)
+  (with-slots (record-handlers next-abbrev-code id) block-env
+    (let ((res (make-instance 'block-env :id id)))
+      (setf (slot-value res 'next-abbrev-code) next-abbrev-code)
+      res)))
+	  
+(defun parse-application-block (form)
+  (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
+	 (block-env (get-block-env (cdr (assoc 'block-id form))))
+	 (tmp-env (make-tmp-env block-env)))
+    (remove-if-not #'identity
+		   (iter (while t)
+			 (collect (destructuring-bind (type form)
+				      ;; This HANDLER-CASE does automatic closing of blocks at the end of the stream
+				      (handler-case (lexer-advance)
+					(stop-iteration () (terminate)))
+				    (ecase type
+				      (:end-block (terminate))
+				      (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
+						  (parse-standard-block form)
+						  (parse-application-block form)))
+				      (:define-abbrev (setf-record-handler tmp-env (cdr (assoc 'specs form))))
+				      ((:unabbrev-record :abbrev-record)
+				       `(:record ,form))
+				      )))))))
+
+(defun parser-advance ()
+  "This is just the toplevel wrapper around parse block"
+  (destructuring-bind (type form) (lexer-advance)
+    (if (eq :block type)
+	(if (> first-application-block-id (cdr (assoc 'block-id form)))
+	    (parse-standard-block form)
+	    (parse-application-block form))
+	(error 'llvm-bitcode-read-error "~a encountered on the top level" type))))
 
 
