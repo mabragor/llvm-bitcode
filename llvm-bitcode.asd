@@ -19,7 +19,7 @@
 (defsystem #:llvm-bitcode-tests
   :description "Tests for LLVM-BITCODE."
   :licence "MIT"
-  :depends-on (:llvm-bitcode :fiveam :flexi-streams :iterate :bit-smasher)
+  :depends-on (:llvm-bitcode :fiveam :flexi-streams :iterate :bit-smasher :cl-fad)
   :components ((:file "tests")))
 
 (defmethod perform ((op test-op) (sys (eql (find-system :llvm-bitcode))))

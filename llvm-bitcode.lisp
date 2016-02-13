@@ -203,12 +203,12 @@
 
 ;; TODO : I don't know why it keeps talking 'Deleting unreachable code' here...
 (defun read-abbrev-op ()
-  (if (bit-eqv #*1 (inext-or-error *bit-reader* 1))
-      `(:literal ,(read-vbr 8))
+  (if (not (zerop (int<- (bit-eqv #*1 (inext-or-error *bit-reader* 1)))))
+      `(:literal ,(int<- (read-vbr 8)))
       (let ((op (read-fixint 3)))
 	(cond
-	  ((equal 1 op) `(:fixed ,(read-vbr 5)))
-	  ((equal 2 op) `(:vbr ,(read-vbr 5)))
+	  ((equal 1 op) `(:fixed ,(int<- (read-vbr 5))))
+	  ((equal 2 op) `(:vbr ,(int<- (read-vbr 5))))
 	  ((equal 3 op) :array)
 	  ((equal 4 op) :char6)
 	  ((equal 5 op) :blob)
@@ -316,7 +316,7 @@ They are used to modify reader's state on the higher level."
 
 (defun read-array (elt-reader)
   ;; TODO : actually assemble all the numerical constants into one place -- in case of future change
-  (let ((len (read-vbr 6)))
+  (let ((len (int<- (read-vbr 6))))
     (list :array
 	  (iter (for i from 1 to len)
 		(collect (funcall elt-reader))))))
@@ -343,9 +343,9 @@ They are used to modify reader's state on the higher level."
 	(destructuring-bind (type arg) spec
 	  (ecase type
 	    (:fixed (lambda ()
-		      (read-fixint arg)))
+		      (read-fixint (int<- arg))))
 	    (:vbr (lambda ()
-		    (read-vbr arg)))
+		    (read-vbr (int<- arg))))
 	    (:literal (lambda ()
 			arg)))))))
     
@@ -384,35 +384,63 @@ They are used to modify reader's state on the higher level."
       (gethash code (slot-value block-env 'record-handlers))
       (read-error "Unrecognized abbreviated record code: ~a" code)))
 
+
+(defmacro parse-block-entries (&body clauses)
+  "TYPE and FORM are intentionally leaked into CLAUSES"
+  `(remove-if-not #'identity
+		  (iter (while t)
+			(collect (destructuring-bind (type form) (handler-case (lexer-advance)
+								   (stop-iteration () (terminate)))
+				   (ecase type
+				     ,@clauses))))))
+
+(defparameter *debug* nil)
+
+(defmacro if-debug (then &optional else)
+  `(if *debug*
+       ,then
+       ,else))
+
+(defmacro if-debug-level (level then &optional else)
+  `(if (member ,level *debug* :test #'eq)
+       ,then
+       ,else))
+
 (defun parse-standard-block (form)
   (cond ((equal blockinfo-block-id (cdr (assoc 'block-id form)))
-	 (progn (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
-		      cur-block
-		      ;; probably should set some more things here
-		      )
-		  (iter (while t)
-			(destructuring-bind (type form) (lexer-advance)
-			  (ecase type
-			    (:end-block (terminate))
-			    (:block (warn "subblock encountered inside BLOCKINFO block -- skipping")
-			      (skip-block (cdr (assoc 'block-len form))))
-			    (:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form)))
-				nil)
-			    ((:unabbrev-record :abbrev-record)
-			     ;; TODO : what if CUR-BLOCK is still NULL?
-			     (let ((it (cdr (assoc 'code form))))
-			       (cond ((equal blockinfo-code-setbid it)
-				      (setf cur-block (get-block-env (car (cdr (assoc 'fields form))))))
-				     ((equal blockinfo-code-blockname it)
-				      (setf (name cur-block) (car (cdr (assoc 'fields form)))))
-				     ((equal blockinfo-code-setrecordname it)
-				      (setf-record-name cur-block
-							(car (cdr (assoc 'fields form)))
-							(cadr (cdr (assoc 'fields form)))))
-				     (t (read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
-			    ))))
-		nil))
+	 (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
+	       cur-block)
+	   (let ((res (parse-block-entries
+			(:end-block (collect '(:end-block)) (terminate))
+			(:block (warn "subblock encountered inside BLOCKINFO block -- skipping")
+			  (skip-block (cdr (assoc 'block-len form)))
+			  (if-debug `(:skipped-block ,(cdr (assoc 'block-id form)))))
+			(:define-abbrev (setf-record-handler cur-block (cdr (assoc 'specs form)))
+			    (if-debug `(:define-abbrev ,(1- (slot-value cur-block 'next-abbrev-code))
+					   ,@(cdr (assoc 'specs form)))))
+			((:unabbrev-record :abbrev-record)
+			 ;; TODO : what if CUR-BLOCK is still NULL?
+			 (let ((it (cdr (assoc 'code form))))
+			   (cond ((equal blockinfo-code-setbid it)
+				  (setf cur-block (get-block-env (car (cdr (assoc 'fields form)))))
+				  (if-debug `(:set-block-id ,(car (cdr (assoc 'fields form))))))
+				 ((equal blockinfo-code-blockname it)
+				  (setf (name cur-block) (car (cdr (assoc 'fields form))))
+				  (if-debug `(:set-block-nam ,(car (cdr (assoc 'fields form))))))
+				 ((equal blockinfo-code-setrecordname it)
+				  (setf-record-name cur-block
+						    (car (cdr (assoc 'fields form)))
+						    (cadr (cdr (assoc 'fields form))))
+				  (if-debug `(:set-record-name ,(car (cdr (assoc 'fields form)))
+							       ,(cadr (cdr (assoc 'fields form))))))
+				 (t (read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
+			)))
+	     (if-debug (list :block-info :abbr-len (cdr (assoc 'abbrev-len form))
+			     :len (cdr (assoc 'block-len form))
+			     res)))))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
+
+		  
 
 
 (defun make-tmp-env (block-env)
@@ -425,23 +453,22 @@ They are used to modify reader's state on the higher level."
   (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
 	 (block-env (get-block-env (cdr (assoc 'block-id form))))
 	 (tmp-env (make-tmp-env block-env)))
-    (list :block (cdr (assoc 'block-id form))
-	  (remove-if-not #'identity
-			 (iter (while t)
-			       (collect (destructuring-bind (type form)
-					    ;; This HANDLER-CASE does automatic closing of blocks at the end of the stream
-					    (handler-case (lexer-advance)
-					      (stop-iteration () (terminate)))
-					  (ecase type
-					    (:end-block (terminate))
-					    (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
-							(parse-standard-block form)
-							(parse-application-block form)))
-					    (:define-abbrev (setf-record-handler tmp-env (cdr (assoc 'specs form)))
-						nil)
-					    ((:unabbrev-record :abbrev-record)
-					     `(:record ,form))
-					    ))))))))
+    (let ((res (parse-block-entries
+		 (:end-block (collect '(:end-block)) (terminate))
+		 (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
+			     (parse-standard-block form)
+			     (parse-application-block form)))
+		 (:define-abbrev (setf-record-handler tmp-env (cdr (assoc 'specs form)))
+		     (if-debug `(:define-abbrev ,(1- (slot-value tmp-env 'next-abbrev-code))
+				    ,@(cdr (assoc 'specs form)))))
+		 ((:unabbrev-record :abbrev-record)
+		  `(,(if-debug type :record) ,form))
+		 )))
+      (if-debug (list :block :id (cdr (assoc 'block-id form))
+		      :abbr-len (cdr (assoc 'abbrev-len form))
+		      :len (cdr (assoc 'block-len form))
+		      res)
+		(list :block (cdr (assoc 'block-id form)) res)))))
 
 (defun parser-advance ()
   "This is just the toplevel wrapper around parse block"
@@ -454,13 +481,19 @@ They are used to modify reader's state on the higher level."
 
 
 
-(defun read-bc-file (fname)
+(defun read-bc-file (fname &key debug)
   (with-open-file (stream fname :element-type `(unsigned-byte ,bits-in-byte))
-    (let ((*bit-reader* (bit-reader stream)))
+    (let ((*bit-reader* (bit-reader stream))
+	  (block-envs (make-hash-table :test #'equal))
+	  (*debug* debug))
       (read-bitcode-header)
       (read-magic-number)
       (iter (while t)
 	    (collect (let ((it (handler-case (parser-advance)
 				 (stop-iteration () (terminate)))))
-		       (format t "Read a new form: ~a~%" it)
+		       ;; (format t "Read a new form: ~a~%" it)
 		       it))))))
+
+(defun hash->assoc (hash)
+  (iter (for (key val) in-hashtable hash)
+	(collect (cons key val))))
