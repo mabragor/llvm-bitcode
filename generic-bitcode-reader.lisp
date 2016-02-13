@@ -1,4 +1,4 @@
-;;;; llvm-bitcode.lisp
+;;;; generic-bitcode-reader.lisp
 
 (in-package #:llvm-bitcode)
 

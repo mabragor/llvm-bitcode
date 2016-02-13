@@ -14,7 +14,8 @@
 			 #:bit-smasher #:quasiquote-2.0 #:cl-interpol)
   :serial t
   :components ((:file "package")
-               (:file "llvm-bitcode")))
+               (:file "generic-bitcode-reader")
+	       (:file "llvm-bitcode-reader")))
 
 (defsystem #:llvm-bitcode-tests
   :description "Tests for LLVM-BITCODE."
