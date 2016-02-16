@@ -14,9 +14,11 @@
 ;; TODO : this one should start from FIRST-APPLICATION-BLOCK-ID
 (defparameter block-ids '(module paramattr paramattr-group constants function
 			  unused-id1 value-symtab metadata metadata-attachment
-			  type use-list))
+			  type use-list module-strtab function-summary operand-bundle-tags
+			  metadata-kind))
 
 ;; TODO : these all are 1-based
+(defparameter identification-codes '(string epoch))
 (defparameter module-codes '(version triple datalayout asm section-name
 			     deplib global-var function alias
 			     purge-vals gcname))

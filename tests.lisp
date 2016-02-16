@@ -3,7 +3,7 @@
 
 (defpackage :llvm-bitcode-tests
   (:use :cl :llvm-bitcode :fiveam :flexi-streams :iterate :bit-smasher)
-  (:shadowing-import-from :llvm-bitcode :inext-or-error :code :fields)
+  (:shadowing-import-from :llvm-bitcode :inext-or-error :code :fields :abbrev-id)
   (:shadowing-import-from :cl-fad :merge-pathnames-as-file)
   (:export #:run-tests))
 
@@ -66,7 +66,7 @@
 				 (:define-abbrev 6 (:literal 18) (:fixed 1) :array (:fixed 4)) (:define-abbrev 7 (:literal 19) :array :char6)
 				 (:define-abbrev 8 (:literal 20) (:fixed 1) :array (:fixed 4)) (:define-abbrev 9 (:literal 11) (:vbr 8) (:fixed 4))
 				 (:unabbrev-record ((llvm-bitcode::code . 1) (llvm-bitcode::fields 12))) (:unabbrev-record ((llvm-bitcode::code . 7) (llvm-bitcode::fields 8)))
-				 (:abbrev-record ((llvm-bitcode::code . 9) 11 #*0001101 0)) (:abbrev-record ((llvm-bitcode::code . 4) 8 1 0))
+				 (:abbrev-record ((llvm-bitcode::code . 11) (abbrev-id . 9) (fields #*0001101 0))) (:abbrev-record ((llvm-bitcode::code . 4) 8 1 0))
 				 (:unabbrev-record ((llvm-bitcode::code . 7) (llvm-bitcode::fields 32))) (:abbrev-record ((llvm-bitcode::code . 5) 21 0 (:array (3))))
 				 (:abbrev-record ((llvm-bitcode::code . 4) 8 4 0)) (:abbrev-record ((llvm-bitcode::code . 4) 8 0 0))
 				 (:abbrev-record ((llvm-bitcode::code . 5) 21 0 (:array (3 6)))) (:abbrev-record ((llvm-bitcode::code . 4) 8 7 0))

@@ -15,7 +15,8 @@
   :serial t
   :components ((:file "package")
                (:file "generic-bitcode-reader")
-	       (:file "llvm-bitcode-reader")))
+	       ;; (:file "llvm-bitcode-reader")
+	       ))
 
 (defsystem #:llvm-bitcode-tests
   :description "Tests for LLVM-BITCODE."

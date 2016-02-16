@@ -299,8 +299,10 @@
 They are used to modify reader's state on the higher level."
   (with-primitive-commands (end-block block define-abbrev unabbrev-record)
     ;; handle defined abbrevs
-    `(:abbrev-record (,(cons 'code code)
-		       ,@(funcall (get-handler code))))))
+    (let ((it (funcall (get-handler code))))
+      `(:abbrev-record (,(cons 'code (car it))
+			 ,(cons 'abbrev-id code)
+			 ,(cons 'fields (cdr it)))))))
 
 (defun skip-block (len-in-32-bits)
   (iter (for i from 1 to len-in-32-bits)
