@@ -11,12 +11,19 @@
 
 (defparameter abbrev-id-width 2)
 
-(define-condition llvm-bitcode-read-error (error simple-condition) ())
+(define-condition generic-bitcode-read-error (error simple-condition) ())
+(define-condition llvm-bitcode-read-error (generic-bitcode-read-error) ())
 
-(defmacro read-error (format &rest args)
+(defmacro generic-read-error (format &rest args)
+  `(error 'generic-bitcode-read-error
+	  :format-control ,format
+	  :format-arguments (list ,@args)))
+
+(defmacro llvm-read-error (format &rest args)
   `(error 'llvm-bitcode-read-error
 	  :format-control ,format
 	  :format-arguments (list ,@args)))
+
 
 (defmacro with-yield-dispatch ((&rest handlers) &body body)
   "We redefine YIELD so that it smartly handles special KWD arguments"
@@ -141,10 +148,10 @@
 (defun read-bitcode-header ()
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
     (if (not (equal (char-code #\B) it))
-  	(read-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
+  	(generic-read-error "First byte of LLVM bitcode should be #\b, but got: ~a" it)))
   (let ((it (int<- (inext-or-error *bit-reader* bits-in-byte))))
     (if (not (equal (char-code #\C) it))
-  	(read-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it)))
+  	(generic-read-error "Second byte of LLVM bitcode should be #\c, but got: ~a" it)))
   :success)
   
 ;; TODO : actually implement also the wrapper format
@@ -155,7 +162,7 @@
     (when expected-number
       (let ((expected-number (mapcar #'bits<- expected-number)))
 	(if (not (equal expected-number res))
-	    (read-error "Expected magic number ~a, but got: ~a" expected-number res))))
+	    (generic-read-error "Expected magic number ~a, but got: ~a" expected-number res))))
     res))
   
 (defun decode-char6 (code)
@@ -166,7 +173,7 @@
 	  ((< it (+ 26 26 10)) (code-char (+ (char-code #\0) (- it 26 26))))
 	  ((= it 62) #\.)
 	  ((= it 63) #\_)
-	  (t (read-error "Failed to decode ~a as char6" it)))))
+	  (t (generic-read-error "Failed to decode ~a as char6" it)))))
 
 (defun encode-char6 (char)
   (bits<- (cond ((char= char #\.) 62)
@@ -181,7 +188,7 @@
 			     ((and (>= code (char-code #\0))
 				   (<= code (char-code #\9)))
 			      (+ (- code (char-code #\A)) 26 26))
-			     (t (read-error "Don't know how to encode ~a as char6" char))))))
+			     (t (generic-read-error "Don't know how to encode ~a as char6" char))))))
 	  6))
 
 (defun bits<- (smth &optional length)
@@ -212,7 +219,7 @@
 	  ((equal 3 op) :array)
 	  ((equal 4 op) :char6)
 	  ((equal 5 op) :blob)
-	  (t (read-error "Don't know how to read this abbrev op:~a" op))))))
+	  (t (generic-read-error "Don't know how to read this abbrev op:~a" op))))))
 	
 
 
@@ -336,7 +343,7 @@ They are used to modify reader's state on the higher level."
   (let ((spec (inext-or-error spec-iter)))
     (if (symbolp spec)
 	(cond ((eq :array spec) (let ((elt-reader (handler-case (mk-reader-thunk spec-iter)
-						    (stop-iteration () (read-error "Spec finished before array was complete")))))
+						    (stop-iteration () (generic-read-error "Spec finished before array was complete")))))
 				  (lambda ()
 				    (read-array elt-reader))))
 	      ((eq :blob spec) #'read-blob)
@@ -384,7 +391,7 @@ They are used to modify reader's state on the higher level."
 (defun get-handler (code)
   (or (gethash code (slot-value tmp-env 'record-handlers))
       (gethash code (slot-value block-env 'record-handlers))
-      (read-error "Unrecognized abbreviated record code: ~a" code)))
+      (generic-read-error "Unrecognized abbreviated record code: ~a" code)))
 
 
 (defmacro parse-block-entries (&body clauses)
@@ -435,7 +442,7 @@ They are used to modify reader's state on the higher level."
 						    (cadr (cdr (assoc 'fields form))))
 				  (if-debug `(:set-record-name ,(car (cdr (assoc 'fields form)))
 							       ,(cadr (cdr (assoc 'fields form))))))
-				 (t (read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
+				 (t (generic-read-error "Unexpected field in BLOCK INFO block: ~a" it)))))
 			)))
 	     (if-debug (list :block-info :abbr-len (cdr (assoc 'abbrev-len form))
 			     :len (cdr (assoc 'block-len form))
@@ -479,7 +486,7 @@ They are used to modify reader's state on the higher level."
 	(if (> first-application-block-id (cdr (assoc 'block-id form)))
 	    (parse-standard-block form)
 	    (parse-application-block form))
-	(read-error "~a encountered on the top level" type))))
+	(generic-read-error "~a encountered on the top level" type))))
 
 
 

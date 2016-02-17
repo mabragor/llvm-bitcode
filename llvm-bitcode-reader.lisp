@@ -13,7 +13,7 @@
 
 ;; TODO : this one should start from FIRST-APPLICATION-BLOCK-ID
 (defparameter block-ids '(module paramattr paramattr-group constants function
-			  unused-id1 value-symtab metadata metadata-attachment
+			  identification value-symtab metadata metadata-attachment
 			  type use-list module-strtab function-summary operand-bundle-tags
 			  metadata-kind))
 
@@ -110,3 +110,114 @@
 
 ;; (define-block param-attr 9
 ;;   (records entry))
+
+;; Blocks to write (symbolic) parsers for
+;; * module
+;; * paramattr
+;; * (done, modulo macros) paramattr-group
+;; * constants
+;; * function
+;; * (done) identification
+;; * value-symtab
+;; * metadata
+;; * metadata-attachment
+;; * type
+;; * use-list
+;; * module-strtab
+;; * function-summary
+;; * operand-bundle-tags
+;; * metadata-kind
+
+;; TODO : in the actual C++ LLVM code they put a lot of efforts to be able
+;;      : to read parts of Bitcode file, to skip over chunks of it efficiently
+;;      : and so on. Later, perhaps, this should be implemented too?
+
+;; I should have an enclosing context, where all the block numbers are defined together
+
+;; Maybe ERRORing is the default behavior -- I shouldn't explicitly write it down
+(define-block identification (:on-undefined-blocks :error :on-undefined-records :error)
+  (records (string string)
+	   (epoch int)))
+
+(define-block paramattr (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
+  (records (entry-old ...) ; here is some sort-of complex parsing, modifying the context
+	   (entry ...)))
+
+(defmacro define-enum-parser (name base-index &body kwds)
+  ;; TODO : this should expand into parser definition
+  `(defun parse-... (x)
+     )
+  nil)
+
+(define-enum-parser attribute-kind 1
+  alignment always-inline by-val inline-hint in-reg
+  min-size naked nest no-alias no-builtin no-capture
+  no-duplicate no-implicit-float no-inline non-lazy-bind
+  no-red-zone no-return no-unwind optimize-for-size
+  read-none read-only returned returns-twice s-ext
+  stack-alignment stack-protect stack-protect-req
+  stack-protect-strong struct-ret sanitize-address
+  sanitize-thread sanitize-memory uw-table z-ext
+  builtin cold optimize-none in-alloca non-null
+  jump-table dereferenceable dereferenceable-or-null
+  convergent safestack argmemonly swift-self swift-error
+  no-recurse inaccessiblemem-only inaccessiblemem-or-argmemonly)
+
+(defun ensure-one-of-syms (sym-bag x)
+  (if (not (symbolp x))
+      (llvm-read-error "Expected one of ~a, but got non-symbol ~a" sym-bag x)
+      (if (not (member x sym-bag :test #'eq))
+	  (llvm-read-error "Expected one of ~a, but got ~a" sym-bag x)
+	  x)))
+
+(defun parse-out-null-terminated-string (lst)
+  (let ((lst lst) ; our own copy of lst
+	res)
+    (iter (for elt on lst)
+	  (if (equal 0 (car elt))
+	      (progn (setf lst elt)
+		     (terminate))
+	      (push (car elt) res)))
+    (if (not (equal 0 (car lst)))
+	(llvm-read-error "The string is not null-terminated"))
+    (values (coerce (nreverse res) 'string)
+	    (cdr lst))))
+
+(defun parse-string-with-val-attr (lst)
+  (multiple-value-bind (str1 lst) (parse-out-null-terminated-string lst)
+    (multiple-value-bind (str2 lst) (parse-out-null-terminated-string lst)
+      (values str1 str2 lst))))
+
+(defun parse-attrs-lst (lst)
+  (if lst
+      (ecase (funcall (lambda-enum-parser 0 (enum int str str-with-val)) (car lst))
+	(enum (cons (parse-attribute-kind (cadr lst))
+		    (parse-attrs-lst (cddr lst))))
+	(int (cons (cons (ensure-one-of-syms '(alignment stack-alignment dereferenceable dereferenceable-or-null)
+					     (parse-attribute-kind (cadr lst)))
+			 (int<- (caddr lst)))
+		   (parse-attrs-lst (cdddr lst))))
+	(str (multiple-value-bind (str rest) (parse-out-null-terminated-string lst)
+	       (cons (cons str nil)
+		     (parse-attrs-lst rest))))
+	(str-with-val (multiple-value-bind (str val rest) (parse-string-with-val-attr lst)
+			(cons (cons str val)
+			      (parse-attrs-lst rest)))))))
+			
+    
+    
+
+(define-block paramattr-group (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
+  ;; Maybe, there's better way to write 3 instead of hardcoding?
+  (records ((grp-entry 3) (id int) (index int) (attrs (parse-rest-with-function #'parse-attrs-lst))
+	    (:side-effect (add-attr-group-to-current-context (cdr (assoc 'id res))
+							     (cdr (assoc 'index res))
+							     (cdr (assoc 'attrs res)))))))
+
+
+
+;; TODO : I've no clue 
+;; ;; It was :SKIP for original LLVM, but I guess it's not right -- malformation will go unnoticed
+;; (define-block metadata-kind (:on-undefined-blocks :skip :on-undefined-records :warn)
+;;   (records (string string)
+;; 	   (epoch int)))
