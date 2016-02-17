@@ -113,7 +113,7 @@
 
 ;; Blocks to write (symbolic) parsers for
 ;; * module
-;; * paramattr
+;; * (done, modulo macros) paramattr
 ;; * (done, modulo macros) paramattr-group
 ;; * constants
 ;; * function
@@ -139,17 +139,13 @@
   (records (string string)
 	   (epoch int)))
 
-(define-block paramattr (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
-  (records (entry-old ...) ; here is some sort-of complex parsing, modifying the context
-	   (entry ...)))
-
 (defmacro define-enum-parser (name base-index &body kwds)
   ;; TODO : this should expand into parser definition
   `(defun parse-... (x)
      )
   nil)
 
-(define-enum-parser attribute-kind 1
+(define-enum-parser attribute-kind (1 :default none)
   alignment always-inline by-val inline-hint in-reg
   min-size naked nest no-alias no-builtin no-capture
   no-duplicate no-implicit-float no-inline non-lazy-bind
@@ -213,6 +209,68 @@
 	    (:side-effect (add-attr-group-to-current-context (cdr (assoc 'id res))
 							     (cdr (assoc 'index res))
 							     (cdr (assoc 'attrs res)))))))
+
+(defun parse-attrs-new (lst)
+  ;; TODO : check that current group id is actually present in the current context?
+  (mapcar (lambda (x)
+	    (list :group x))
+	  lst))
+
+
+(defun parse-raw-attrs (x)
+  (let ((attrs1 (funcall (lambda-enum-power-parser
+			  0 (z-ext s-ext no-return in-reg struct-ret no-unwind no-alias by-val next read-none
+				   read-only no-inline always-inline optimize-for-size stack-protect
+				   stack-protect-req))
+			 x))
+	(attrs2 (funcall (lambda-enum-power-parser
+			  21 (no-capture no-red-zone no-implicit-float naked inline-hint))
+			 x))
+	(attrs3 (funcall (lambda-enum-power-parser
+			  29 (returns-twice uw-table non-lazy-bind sanitize-address min-size
+					    no-duplicate stack-protect-strong sanitize-thread
+					    sanitize-memory no-builtin returned cold builtin
+					    optimize-none in-alloca non-null jump-table
+					    convergent safe-stack no-recurse inaccessible-mem-only
+					    inaccessible-mem-or-arg-mem-only))
+			 x)))
+    (let ((pre-alignment (int<- (rshift (bit-and (bits<- (lshift (bits<- 31) 16) 64) x) 16)))
+	  (pre-stack-alignment (int<- (rshift (bit-and (bits<- (lshift (bits<- 7) 26) 64) x) 26))))
+      (let ((res (nconc attrs1 attrs2 attrs3)))
+	(when (not (zerop pre-alignment))
+	  (push (cons 'alignment (expt 2 (1- pre-alignment)))
+		res))
+	(when (not (zerop pre-stack-alignment))
+	  (push (cons 'stack-alignment (expt 2 (1- pre-stack-alignment)))
+		res))
+	res))))
+
+(defun decode-llvm-attrs-old (x)
+  "The (apparently) legacy way to store parameter attributes."
+  (let ((x (bits<- x 64)))
+    (let ((alignment (int<- (rshift (bit-and (bits<- (lshift (bits<- "ffff") 16) 64) x) 16))))
+      (let ((rest (parse-raw-attrs (bit-ior (bits<- (rshift (bit-and (bits<- (lshift (bits<- "fffff") 32) 64)
+								     x)
+							    11)
+						    64)
+					    (bit-and (bits<- "ffff" 64) x)))))
+	(if (not (zerop alignment))
+	    (cons (cons 'alignment alignment)
+		  rest)
+	    rest)))))
+
+(defun parse-attrs-old (lst)
+  (iter (generate elt in lst)
+	(collect (list (next elt)
+		       (decode-llvm-attrs-old (next elt))))))
+	  
+
+
+(define-block paramattr (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
+  (records (entry-old #'parse-attrs-old
+		      (:side-effect (append-attrs-to-current-context res)))
+	   (entry #'parse-attrs-new
+		  (:side-effect (append-attrs-to-current-context res)))))
 
 
 
