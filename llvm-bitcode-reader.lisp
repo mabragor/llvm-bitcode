@@ -70,14 +70,6 @@
 			       atomic-rmw resume landing-pad load-atomic store-atomic))
 (defparameter uselist-codes '(entry))
 
-;; (define-block module 8
-;;   (subblocks block-info paramattr type type-symtab value-symtab
-;; 	     constants function metadata)
-;;   (records version triple data-layout asm section-name deplib
-;; 	   global-var function alias purge-vals gc-name))
-
-
-
 ;; (defun string<- (lst)
 ;;   (coerce (mapcar #'char-code lst) 'string))
 
@@ -264,13 +256,81 @@
 	(collect (list (next elt)
 		       (decode-llvm-attrs-old (next elt))))))
 	  
-
-
 (define-block paramattr (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
   (records (entry-old #'parse-attrs-old
 		      (:side-effect (append-attrs-to-current-context res)))
 	   (entry #'parse-attrs-new
 		  (:side-effect (append-attrs-to-current-context res)))))
+
+(defun %parse-alias (x &optional (old-p t))
+  (let ((it (mk-iter x)))
+    (macrolet ((next! () `(inext-or-error it)))
+      (let* ((type (type-by-id (next!)))
+	     (addr-space (if old-p
+			     ;; this is a really kludgy code
+			     (let ((it (get-addr-space type)))
+			       (setf type (get-element-type type))
+			       it)
+			     (next!)))
+	     (val (next!))
+	     (linkage (next!))
+	     (res `((:type . ,type) (:addr-space . ,addr-space) (:val . ,val) (:linkage . ,linkage))))
+	;; now here is the part with optional arguments (the new alias style)
+	(handler-case (progn (let ((visibility (decode-visibility (next!))))
+			       (if (and (eq 'local (cdr (assoc :linkage res)))
+					(not (eq 'default visibility)))
+				   (llvm-read-error "Alias with local linkage should have default visibility, ~
+                                                     but got ~a" visibility))
+			       (push (cons :version version) res))
+			     (handler-case (push (cons :dll-storage-class (decode-dll-storage-class (next!))) res)
+			       (stop-iteration () (progn (upgrade-dll-import-export-linkage res)
+							 (error 'stop-iteration))))
+			     (push (cons :thread-local-mode (decode-thread-local (next!))) res)
+			     (push (cons :unnamed-addr (next!)) res))
+	  (stop-iteration () nil))
+	(push res value-list)
+	(push (cons res (cdr (assoc :val res))) alias-inits)
+	res))))
+      
+(defun parse-alias (x)
+  (%parse-alias x))
+(defun parse-alias-old (x)
+  (%parse-alias x t))
+
+;; TODO : numbers (codes) of blocks are defined elsewhere
+;; TODO : global cleanup upon exit from this routine
+(define-block module (:on-undefined-blocks :error :on-repeat :error :on-undefined-records :error)
+  (blocks block-info paramattr paramattr-group type value-symtab
+	  constants metadata metadata-kind function uselist operand-bundle-tags)
+  ;; Order of record specs is important, as this encodes their codes
+  (records ((version 1) int
+	    (:side-effect (cond ((equal 0 (car res)) (setf use-relative-ids nil))
+				((equal 1 (car res)) (setf use-relative-ids t))
+				(t (llvm-read-error "Unsupported LLVM bitcode version: ~a" (car res))))))
+	   (target-triple string) ; TODO : what does module->setTargetTriple do?
+	   (datalayout string)
+	   (asm string)
+	   (section-name string (:side-effect (push (car res) section-table)))
+	   (deplib string)	   
+	   (global-var #'parse-global-var)
+	   (function #'parse-function)
+	   (alias-old #'parse-alias-old)
+	   (purge-vals int (:side-effect (setf value-list (subseq value-list 0 (car res)))))
+	   (gc-name string (:side-effect (push (car res) gc-table)))
+	   (comdat (selection-kind (parse-with-function
+				    (lambda-enum-parser 1 (any exact-match largest no-duplicates same-size))))
+		   (name (parse-rest-with-function #'lengthed-string))
+		   ;; TODO : in C++ there are more side-effects. Should I implement them?
+		   (:side-effect (push res comdat-list)))
+	   (vst-offset int (:side-effect (setf vst-offset (car res))))
+	   (alias #'parse-alias)
+	   ;; TODO : + some additional consistency checks
+	   (metadata-values int (:side-effect (set metadata-list (make-list (car res) nil))))
+	   (source-filename string)))
+		   
+
+
+
 
 
 
