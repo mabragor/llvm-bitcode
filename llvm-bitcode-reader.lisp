@@ -104,7 +104,7 @@
 ;;   (records entry))
 
 ;; Blocks to write (symbolic) parsers for
-;; * module
+;; * (done, module auxfunctions) module
 ;; * (done, modulo macros) paramattr
 ;; * (done, modulo macros) paramattr-group
 ;; * constants
@@ -330,12 +330,22 @@
 		       (if (has-implicit-comdat raw-linkage)
 			   1 ; TODO : I don't understand why this should be so
 			   )))
+      ;; TODO : change for insert kwd if nonnil or something
       `((:type . ,type) (:addr-space . ,addr-space) (:constant . ,constant)
 	(:linkage . ,linkage) (:alignment . ,alignment)
 	(:section . ,section) (:visibility . ,visibility) (:thread-local . ,thread-local)
 	(:unnamed-addr . ,unnamed-addr) (:external-init . ,external-init)
 	(:dll-storage . ,dll-storage) (:comdat . ,comdat)))))
-      
+
+(defun parse-function (x)
+  (destructuring-bind (type call-conv is-proto raw-linkage attributes alignment
+			    section visibility
+			    &optional gc-id unnamed-addr prologue-id dll-storage
+			    comdat prefix personality) x
+    (let (linkage)
+      (setf type (get-type-by-id type))
+      ;; TODO : this dynamic cast to pointer type I don't understand
+      ...)))
 			   
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
@@ -369,7 +379,9 @@
 	   (source-filename string)))
 		   
 
-
+;; OK, looks like I need to start to incorporate partial parsing of LLVM
+;; into my generic parsing tool via hooks (this way I would have a feeling of progress,
+;;                                         otherwise it's too hard)
 
 
 
