@@ -273,7 +273,7 @@
 			       it)
 			     (next!)))
 	     (val (next!))
-	     (linkage (next!))
+	     (linkage (decode-linkage (next!)))
 	     (res `((:type . ,type) (:addr-space . ,addr-space) (:val . ,val) (:linkage . ,linkage))))
 	;; now here is the part with optional arguments (the new alias style)
 	(handler-case (progn (let ((visibility (decode-visibility (next!))))
@@ -297,6 +297,46 @@
 (defun parse-alias-old (x)
   (%parse-alias x t))
 
+(defun parse-global-var (x)
+  (destructuring-bind (type pre-addr-space init-id raw-linkage
+			    alignment section &optional (visibility 'default) thread-local
+			    unnamed-addr external-init dll-storage comdat) x
+    (let (constant addr-space linkage)
+      (setf type (type-by-id type))
+      (when (not (zerop (boole boole-and pre-addr-space 1)))
+	(setf constant t))
+      (if (not (zerop (boole boole-and pre-addr-space 1)))
+	  (setf addr-space (ash it -2))
+	  (setf addr-space (get-addr-space type)
+		type (get-element-type type)))
+      (setf alignment (parse-alignment aligment)
+	    linkage (decode-linkage raw-linkage)
+	    visibility (if (eq 'local linkage)
+			   (let ((it (decode-visibility visibility)))
+			     (if (not (eq 'default it))
+				 (llvm-read-error "Visibility for local linkage should be default, but got: ~a"
+						  it)
+				 it))
+			   (decode-visibility visibility))
+	    thread-local (decode-thread-local thread-local)
+	    unnamed-addr (decode-binary unnamed-addr)
+	    external-init (decode-binary external-init)
+	    section (get-section-from-id section)
+	    dll-storage (if dll-storage
+			    (decode-dll-storage dll-storage)
+			    (upgrade-import-export-linkage raw-linkage))
+	    comdat (if comdat
+		       (get-comdat-from-id comdat)
+		       (if (has-implicit-comdat raw-linkage)
+			   1 ; TODO : I don't understand why this should be so
+			   )))
+      `((:type . ,type) (:addr-space . ,addr-space) (:constant . ,constant)
+	(:linkage . ,linkage) (:alignment . ,alignment)
+	(:section . ,section) (:visibility . ,visibility) (:thread-local . ,thread-local)
+	(:unnamed-addr . ,unnamed-addr) (:external-init . ,external-init)
+	(:dll-storage . ,dll-storage) (:comdat . ,comdat)))))
+      
+			   
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
 (define-block module (:on-undefined-blocks :error :on-repeat :error :on-undefined-records :error)
