@@ -12,10 +12,12 @@
 ;; and then see, how to write it in a more convenient form.
 
 ;; TODO : this one should start from FIRST-APPLICATION-BLOCK-ID
-(defparameter block-ids '(module paramattr paramattr-group constants function
-			  identification value-symtab metadata metadata-attachment
-			  type use-list module-strtab function-summary operand-bundle-tags
-			  metadata-kind))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (define-enum block-ids
+      (module first-application-block-id) paramattr paramattr-group constants function
+      identification value-symtab metadata metadata-attachment
+      type use-list module-strtab function-summary operand-bundle-tags
+      metadata-kind))
 
 ;; TODO : these all are 1-based
 (defparameter identification-codes '(string epoch))
@@ -350,6 +352,8 @@
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
 (define-block module (:on-undefined-blocks :error :on-repeat :error :on-undefined-records :error)
+  (:around ;; here we write all the context-establishing things
+   ...)
   (blocks block-info paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function uselist operand-bundle-tags)
   ;; Order of record specs is important, as this encodes their codes
@@ -383,7 +387,8 @@
 ;; into my generic parsing tool via hooks (this way I would have a feeling of progress,
 ;;                                         otherwise it's too hard)
 
-
+(define-block toplevel (:on-undefined-blocks :error :on-undefined-records :error)
+  (blocks identification module))
 
 
 ;; TODO : I've no clue 

@@ -457,11 +457,13 @@ They are used to modify reader's state on the higher level."
     (let ((res (make-instance 'block-env :id id)))
       (setf (slot-value res 'next-abbrev-code) next-abbrev-code)
       res)))
-	  
-(defun parse-application-block (form)
-  (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
-	 (block-env (get-block-env (cdr (assoc 'block-id form))))
-	 (tmp-env (make-tmp-env block-env)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun default-record-parser (form &optional type)
+    (declare (ignorable type))
+    `(,(if-debug type :record) ,form))  
+
+  (defun default-block-parser (form)    
     (let ((res (parse-block-entries
 		 (:end-block (collect '(:end-block)) (terminate))
 		 (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
@@ -471,13 +473,29 @@ They are used to modify reader's state on the higher level."
 		     (if-debug `(:define-abbrev ,(1- (slot-value tmp-env 'next-abbrev-code))
 				    ,@(cdr (assoc 'specs form)))))
 		 ((:unabbrev-record :abbrev-record)
-		  `(,(if-debug type :record) ,form))
-		 )))
+		  (funcall (or (gethash (cdr (assoc 'code form)) record-parsers)
+			       (gethash 'default record-parsers))
+			   form type)))))
       (if-debug (list :block :id (cdr (assoc 'block-id form))
 		      :abbr-len (cdr (assoc 'abbrev-len form))
 		      :len (cdr (assoc 'block-len form))
 		      res)
 		(list :block (cdr (assoc 'block-id form)) res)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter block-parsers (make-hash-table :test #'equal))
+  (defparameter record-parsers (make-hash-table :test #'equal))
+  (setf (gethash 'default record-parsers) #'default-record-parser
+	(gethash 'default block-parsers) #'default-block-parser))
+  
+
+(defun parse-application-block (form)
+  (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
+	 (block-env (get-block-env (cdr (assoc 'block-id form))))
+	 (tmp-env (make-tmp-env block-env)))
+    (funcall (or (gethash (cdr (assoc 'block-id form)) block-parsers)
+		 (gethash 'default block-parsers))
+	     form)))
 
 (defun parser-advance ()
   "This is just the toplevel wrapper around parse block"

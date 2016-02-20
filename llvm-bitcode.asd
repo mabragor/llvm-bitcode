@@ -15,6 +15,7 @@
   :serial t
   :components ((:file "package")
                (:file "generic-bitcode-reader")
+	       (:file "macro-utils")
 	       ;; (:file "llvm-bitcode-reader")
 	       ))
 
