@@ -420,7 +420,7 @@ They are used to modify reader's state on the higher level."
 	 (let ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
 	       cur-block)
 	   (let ((res (parse-block-entries
-			(:end-block (collect '(:end-block)) (terminate))
+			(:end-block (if-debug (collect '(:end-block))) (terminate))
 			(:block (warn "subblock encountered inside BLOCKINFO block -- skipping")
 			  (skip-block (cdr (assoc 'block-len form)))
 			  (if-debug `(:skipped-block ,(cdr (assoc 'block-id form)))))
@@ -449,9 +449,6 @@ They are used to modify reader's state on the higher level."
 			     res)))))
 	(t (error 'llvm-bitcode-error "Don't know the standard block with code: ~a" (cdr (assoc 'block-id form))))))
 
-		  
-
-
 (defun make-tmp-env (block-env)
   (with-slots (record-handlers next-abbrev-code id) block-env
     (let ((res (make-instance 'block-env :id id)))
@@ -465,7 +462,7 @@ They are used to modify reader's state on the higher level."
 
   (defun default-block-parser (form)    
     (let ((res (parse-block-entries
-		 (:end-block (collect '(:end-block)) (terminate))
+		 (:end-block (if-debug (collect '(:end-block))) (terminate))
 		 (:block (if (> first-application-block-id (cdr (assoc 'block-id form)))
 			     (parse-standard-block form)
 			     (parse-application-block form)))
@@ -489,6 +486,15 @@ They are used to modify reader's state on the higher level."
 	(gethash 'default block-parsers) #'default-block-parser))
   
 
+(defmacro with-vanilla-parsers (&body body)
+  `(let ((block-parsers (let ((it (make-hash-table :test #'equal)))
+			  (setf (gethash 'default it) #'default-block-parser)
+			  it))
+	 (record-parsers (let ((it (make-hash-table :test #'equal)))
+			   (setf (gethash 'default it) #'default-record-parser)
+			   it)))
+     ,@body))
+
 (defun parse-application-block (form)
   (let* ((abbrev-id-width (cdr (assoc 'abbrev-len form)))
 	 (block-env (get-block-env (cdr (assoc 'block-id form))))
@@ -497,16 +503,29 @@ They are used to modify reader's state on the higher level."
 		 (gethash 'default block-parsers))
 	     form)))
 
+
+(defun default-toplevel-parser ()
+  (iter (while t)
+	(collect (let ((it (handler-case (parser-advance)
+			     (stop-iteration () (terminate)))))
+		   ;; (format t "Read a new form: ~a~%" it)
+		   it))))
+
 (defun parser-advance ()
   "This is just the toplevel wrapper around parse block"
   (destructuring-bind (type form) (lexer-advance)
-    (if (eq :block type)
-	(if (> first-application-block-id (cdr (assoc 'block-id form)))
-	    (parse-standard-block form)
-	    (parse-application-block form))
-	(generic-read-error "~a encountered on the top level" type))))
+    (cond ((eq :block type)
+	   (if (> first-application-block-id (cdr (assoc 'block-id form)))
+	       (parse-standard-block form)
+	       (parse-application-block form)))
+	  ((member type '(:unabbrev-record :abbrev-record))
+	   (funcall (or (gethash (cdr (assoc 'code form)) record-parsers)
+			(gethash 'default record-parsers))
+		    form type))
+	  (t (generic-read-error "~a encountered on the top level" type)))))
 
 
+(defparameter toplevel-parser nil)
 
 (defun read-bc-file (fname &key debug)
   (with-open-file (stream fname :element-type `(unsigned-byte ,bits-in-byte))
@@ -515,11 +534,11 @@ They are used to modify reader's state on the higher level."
 	  (*debug* debug))
       (read-bitcode-header)
       (read-magic-number)
-      (iter (while t)
-	    (collect (let ((it (handler-case (parser-advance)
-				 (stop-iteration () (terminate)))))
-		       ;; (format t "Read a new form: ~a~%" it)
-		       it))))))
+      (funcall (or toplevel-parser #'default-toplevel-parser)))))
+
+(defun read-llvm-bc-file (fname)
+  (let ((toplevel-parser (gethash 'toplevel block-parser-stash)))
+    (read-bc-file fname)))
 
 (defun hash->assoc (hash)
   (iter (for (key val) in-hashtable hash)

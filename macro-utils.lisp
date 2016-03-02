@@ -1,6 +1,9 @@
 
 (in-package #:llvm-bitcode)
 
+(cl-interpol:enable-interpol-syntax)
+(quasiquote-2.0:enable-quasiquote-2.0)
+
 (defmacro! define-enum (name &body specs)
   `(defparameter ,name (let ((,g!-res nil) (,g!-i -1))
 			 ,@(mapcar (lambda (x)
@@ -9,3 +12,123 @@
 					 `(push (cons ',(car x) (setf ,g!-i ,(cadr x))) ,g!-res)))
 				   specs)
 			 (nreverse ,g!-res))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun error-block-parser (form)
+    (llvm-read-error "Block ~a is unexpected in this context." (cdr (assoc 'block-id form))))
+  (defun error-record-parser (form &optional type)
+    (declare (ignore type))
+    (llvm-read-error "Record ~a is unexpected in this context." (cdr (assoc 'code form))))
+  (defun warn-block-parser (form)
+    (warn "Block ~a is unexpected in this context -- I do standard parsing." (cdr (assoc 'block-id form)))
+    (default-block-parser form))
+  (defun warn-record-parser (form &optional type)
+    (warn "Record ~a is unexpected in this context -- I do standard parsing." (cdr (assoc 'code form)))
+    (default-record-parser form type))
+  (defun skip-block-parser (form)
+    (declare (ignore form))
+    nil)
+  (defun skip-record-parser (form &optional type)
+    (declare (ignore form type))
+    nil)
+
+  (defparameter block-parser-stash (make-hash-table :test #'eq)))
+
+(defun parse-string-field (x)
+  (if (eq :array (car x))
+      (coerce (cadr x) 'string)
+      (error "Don't know how to parse this as string: ~a" x)))
+      
+
+(defun! make-record-parser (spec name id)
+  (declare (ignorable id))
+  (let (side-effect)
+    `(lambda (form &optional type)
+       (declare (ignorable type))
+       (let ((res (cons ,(intern (string name) "KEYWORD")
+			(mapcar (lambda (x y)
+				  (funcall x y))
+				(list ,@(iter (for elt in spec)
+					      (if (consp elt)
+						  (cond ((eq 'function (car elt)) (collect elt))
+							((eq 'parse-with-function (car elt)) (collect elt))
+							((eq :side-effect (car elt)) (setf side-effect (cdr elt)))
+							(t (error "Don't know how to understand this cons record parser spec: ~a" elt)))
+						  (cond ((eq 'int elt)  (collect '#'int<-))
+							((eq 'string elt) (collect '#'parse-string-field))
+							(t (error "Don't know how to understand this atom record parser spec: ~a" elt))))))
+				(cdr (assoc 'fields form)))
+			)))
+	 ,@side-effect
+	 res))))
+
+(defun find-cons-pos (tree sym)
+  "Find first cons in TREE, whose CAR is EQ to SYM"
+  (labels ((rec (x)
+	     (if (consp x)
+		 (if (eq sym (car x))
+		     (return-from find-cons-pos x)
+		     (progn (rec (car x))
+			    (rec (cdr x)))))))
+    (rec tree)
+    (error "Was unable to find ~a in a tree ~a" sym tree)))
+		       
+
+(defun! make-block-parser-wrap (keys specs)
+  (flet ((key (kwd) (getf keys kwd)))
+    (let ((res `(let ((block-parsers (let ((it (make-hash-table :test #'equal)))
+				       (setf (gethash 'default it) ,(if (key :on-undefined-blocks)
+									`#',(intern #?"$((key :on-undefined-blocks))-BLOCK-PARSER")
+									`#'default-block-parser))
+				       ,@(mapcar (lambda (x)
+						   `(setf (gethash ,(or (cdr (assoc x block-ids))
+									(error "I don't know ID for block ~a: check BLOCK-ID assoc list." x))
+								   it)
+							  (or (gethash ',x block-parser-stash)
+							      (progn (warn "No custom parser is yet defined for block ~a -- using default parser." ',x)
+								     (lambda (form)
+								       (with-vanilla-parsers
+									 (default-block-parser form)))))))
+						 (cdr (assoc 'blocks specs)))
+				       it))
+		      (record-parsers (let ((it (make-hash-table :test #'equal)))
+					(setf (gethash 'default it) ,(if (key :on-undefined-records)
+									 `#',(intern #?"$((key :on-undefined-records))-RECORD-PARSER")
+									 `#'default-record-parser))
+					,@(iter (with i = 0)
+						(for rec-spec in (cdr (assoc 'records specs)))
+						(destructuring-bind (name id) (if (atom (car rec-spec))
+										  (list (car rec-spec) (incf i))
+										  (list (caar rec-spec)
+											(setf i (cadr rec-spec))))
+						  (collect `(setf (gethash ,id it)
+								  ,(make-record-parser (cdr rec-spec) name id)))))
+					it)))
+		  ,g!-sub-body)))
+      (values res (find-cons-pos res g!-sub-body)))))
+
+
+
+(defmacro! define-block (name (&rest keys) &body specs)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (setf (gethash ',name block-parser-stash)
+	   (lambda (form)
+	     (let ((res ,(multiple-value-bind (form sub-body) (make-block-parser-wrap keys specs)
+					      ;; TODO : maybe there should be a room for side-effects at block level also?
+					      (setf (car sub-body) `(default-block-parser form))
+					      form)))
+	       (cons ,(intern (string name) "KEYWORD")
+		     (caddr res)))))))
+
+(defmacro! define-toplevel-parser ((&rest keys) &body specs)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (setf (gethash 'toplevel block-parser-stash)
+	   (lambda ()
+	     ,(multiple-value-bind (form sub-body) (make-block-parser-wrap keys specs)
+				   ;; TODO : maybe there should be a room for side-effects at block level also?
+				   (setf (car sub-body) `(default-toplevel-parser))
+				   form)))))
+
+
+
+    

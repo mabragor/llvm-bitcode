@@ -128,11 +128,6 @@
 
 ;; I should have an enclosing context, where all the block numbers are defined together
 
-;; Maybe ERRORing is the default behavior -- I shouldn't explicitly write it down
-(define-block identification (:on-undefined-blocks :error :on-undefined-records :error)
-  (records (string string)
-	   (epoch int)))
-
 (defmacro define-enum-parser (name base-index &body kwds)
   ;; TODO : this should expand into parser definition
   `(defun parse-... (x)
