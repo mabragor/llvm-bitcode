@@ -40,26 +40,68 @@
       (error "Don't know how to parse this as string: ~a" x)))
       
 
-(defun! make-record-parser (spec name id)
+(defun element-cons-parser-code (spec)
+  (or (case (car spec)
+	(function `(funcall ,spec (car cur)))
+	(parse-with-function `(funcall ,(cadr spec) (car cur)))
+	(parse-rest-with-function `(funcall ,(cadr spec) cur)))))
+  
+(defun element-atom-parser-code (spec)
+  (cond ((eq 'int spec)  `(int<- (car cur)))
+	((eq 'string spec) `(parse-string-field (car cur)))
+	(t (error "Don't know how to understand this atom record parser spec: ~a" spec))))
+
+(defun element-atom-advancer-code (spec)
+  (declare (ignore spec))
+  `(setf cur (cdr cur)))
+
+(defun element-parser-code (spec)
+  (if (atom spec)
+      (element-atom-parser-code spec)
+      (element-cons-parser-code spec)))
+
+(defun element-advancer-code (spec)
+  (if (atom spec)
+      (element-atom-advancer-code spec)
+      (element-cons-advancer-code spec)))
+
+(defun element-cons-advancer-code (spec)
+  (ecase (car spec)
+    (function `(setf cur (cdr cur)))
+    (parse-with-function `(setf cur (cdr cur)))
+    (parse-rest-with-function nil)))
+  
+(defun mk-element-parser-code (spec)
+  (declare (special side-effect))
+  (if (atom spec)
+      `(progn (push ,(element-atom-parser-code spec) res)
+	      ,(element-atom-advancer-code spec))
+      (if (eq :side-effect (car spec))
+	  (progn (setf side-effect (cdr spec))
+		 nil)
+	  (let ((code (element-cons-parser-code spec)))
+	    (if code
+		`(progn (push ,code res)
+			,(element-cons-advancer-code spec))
+		`(progn (push (cons ,(intern (string (car spec)) "KEYWORD")
+				    ,(element-parser-code (cadr spec)))
+			      res)
+			,(element-advancer-code (cadr spec))))))))
+
+(defun! make-record-parser (specs name id)
   (declare (ignorable id))
   (let (side-effect)
-    `(lambda (form &optional type)
-       (declare (ignorable type))
-       (let ((res (mapcar (lambda (x y)
-			    (funcall x y))
-			  (list ,@(iter (for elt in spec)
-					(if (consp elt)
-					    (cond ((eq 'function (car elt)) (collect elt))
-						  ((eq 'parse-with-function (car elt)) (collect elt))
-						  ((eq :side-effect (car elt)) (setf side-effect (cdr elt)))
-						  (t (error "Don't know how to understand this cons record parser spec: ~a" elt)))
-					    (cond ((eq 'int elt)  (collect '#'int<-))
-						  ((eq 'string elt) (collect '#'parse-string-field))
-						  (t (error "Don't know how to understand this atom record parser spec: ~a" elt))))))
-			  (cdr (assoc 'fields form)))
-	       ))
-	 ,@side-effect
-	 (cons ,(intern (string name) "KEYWORD") res)))))
+    (declare (special side-effect))
+    (let ((expanded-specs (mapcar #'mk-element-parser-code specs)))
+      `(lambda (form &optional type)
+	 (declare (ignorable type))
+	 (let (res
+	       (cur (cdr (assoc 'fields form))))
+	   ;; TODO : check that lengths match
+	   ,@expanded-specs
+	   ,@side-effect
+	   ;; (nreverse res)
+	   (cons ,(intern (string name) "KEYWORD") res))))))
 
 (defun find-cons-pos (tree sym)
   "Find first cons in TREE, whose CAR is EQ to SYM"
