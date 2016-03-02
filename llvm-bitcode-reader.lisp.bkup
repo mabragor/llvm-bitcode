@@ -344,47 +344,7 @@
       ;; TODO : this dynamic cast to pointer type I don't understand
       ...)))
 			   
-;; TODO : numbers (codes) of blocks are defined elsewhere
-;; TODO : global cleanup upon exit from this routine
-(define-block module (:on-undefined-blocks :error :on-repeat :error :on-undefined-records :error)
-  (:around ;; here we write all the context-establishing things
-   ...)
-  (blocks block-info paramattr paramattr-group type value-symtab
-	  constants metadata metadata-kind function uselist operand-bundle-tags)
-  ;; Order of record specs is important, as this encodes their codes
-  (records ((version 1) int
-	    (:side-effect (cond ((equal 0 (car res)) (setf use-relative-ids nil))
-				((equal 1 (car res)) (setf use-relative-ids t))
-				(t (llvm-read-error "Unsupported LLVM bitcode version: ~a" (car res))))))
-	   (target-triple string) ; TODO : what does module->setTargetTriple do?
-	   (datalayout string)
-	   (asm string)
-	   (section-name string (:side-effect (push (car res) section-table)))
-	   (deplib string)	   
-	   (global-var #'parse-global-var)
-	   (function #'parse-function)
-	   (alias-old #'parse-alias-old)
-	   (purge-vals int (:side-effect (setf value-list (subseq value-list 0 (car res)))))
-	   (gc-name string (:side-effect (push (car res) gc-table)))
-	   (comdat (selection-kind (parse-with-function
-				    (lambda-enum-parser 1 (any exact-match largest no-duplicates same-size))))
-		   (name (parse-rest-with-function #'lengthed-string))
-		   ;; TODO : in C++ there are more side-effects. Should I implement them?
-		   (:side-effect (push res comdat-list)))
-	   (vst-offset int (:side-effect (setf vst-offset (car res))))
-	   (alias #'parse-alias)
-	   ;; TODO : + some additional consistency checks
-	   (metadata-values int (:side-effect (set metadata-list (make-list (car res) nil))))
-	   (source-filename string)))
 		   
-
-;; OK, looks like I need to start to incorporate partial parsing of LLVM
-;; into my generic parsing tool via hooks (this way I would have a feeling of progress,
-;;                                         otherwise it's too hard)
-
-(define-block toplevel (:on-undefined-blocks :error :on-undefined-records :error)
-  (blocks identification module))
-
 
 ;; TODO : I've no clue 
 ;; ;; It was :SKIP for original LLVM, but I guess it's not right -- malformation will go unnoticed
