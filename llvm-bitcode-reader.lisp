@@ -28,6 +28,8 @@
 (defparameter attributes-of-objects nil)
 (defparameter attributes nil)
 
+(defparameter type-table nil)
+
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
 (define-block module (:on-undefined-blocks :error) ; :on-repeat :error :on-undefined-records :error)
@@ -35,7 +37,8 @@
    (let ((use-relative-ids nil)
 	 (attribute-groups (make-hash-table :test #'equal))
 	 (attributes-of-objects (make-hash-table :test #'equal))
-	 (attributes nil))
+	 (attributes nil)
+	 (type-table (make-array 0)))
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -186,3 +189,37 @@
     (:side-effect (append-attrs-to-current-context res))
     )))
 
+(defun append-type-to-typetable (x)
+  (nconc type-table (list x)))
+    
+(define-block type (:on-repeat :error :on-undefined-blocks :error :on-undefined-records :error)
+  ;; TODO : check for matching size of typetable
+  (records ((numentry 1) int
+	    (:side-effect (setf type-table (adjust-array type-table (car res)))))
+	   (void)
+	   (float)
+	   (double)
+	   (label)
+	   (opaque ...)
+	   ;; TODO : bounds checking for int
+	   (integer int)
+	   (pointer #'parse-pointer)
+	   (function-old ...)
+	   (half)
+	   (array ...)
+	   (vector ...)
+	   (x86-fp80)
+	   (fp128)
+	   (ppc-fp128)
+	   (metadata)
+	   (x86-mmx)
+	   (struct-anon ...)
+	   (struct-name ...)
+	   (struct-named ...)
+	   (function ...)
+	   (token)
+	   ;; This side effect is *common* to all the records in this block
+	   (:side-effect (if (not (eq 'numentry (car it)))
+			     (append-type-to-type-table it)))))
+
+  
