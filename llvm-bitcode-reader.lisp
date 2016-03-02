@@ -1,6 +1,8 @@
 
 (in-package llvm-bitcode)
 
+(cl-interpol:enable-interpol-syntax)
+
 ;; OK, let's gradually grow this file, so that at each stage we can interactively test
 ;; what we add.
 
@@ -22,12 +24,18 @@
 	  ))
 
 (defparameter use-relative-ids nil)
+(defparameter attribute-groups nil)
+(defparameter attributes-of-objects nil)
+(defparameter attributes nil)
 
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
 (define-block module (:on-undefined-blocks :error) ; :on-repeat :error :on-undefined-records :error)
   (:around ;; here we write all the context-establishing things
-   (let ((use-relative-ids nil))
+   (let ((use-relative-ids nil)
+	 (attribute-groups (make-hash-table :test #'equal))
+	 (attributes-of-objects (make-hash-table :test #'equal))
+	 (attributes nil))
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -58,12 +66,13 @@
 	   ;; (metadata-values int (:side-effect (set metadata-list (make-list (car res) nil))))
 	   ;; (source-filename string)))
 
-(defun make-enum-alist (specs)
-  (iter (with i = 0)
-	(for spec in specs)
-	(if (atom spec)
-	    (collect (cons (incf i) spec))
-	    (collect (cons (setf i (cadr spec)) (car spec))))))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun make-enum-alist (specs)
+    (iter (with i = 0)
+	  (for spec in specs)
+	  (if (atom spec)
+	      (collect (cons (incf i) spec))
+	      (collect (cons (setf i (cadr spec)) (car spec)))))))
 
 (defmacro define-enum-parser (name kwds &body enums)
   ;; TODO : this should expand into parser definition
@@ -142,10 +151,38 @@
 			(cons (cons str val)
 			      (parse-attrs-lst rest)))))))
 
+(defun add-attr-group-to-current-context (grp-id obj-id attrs)
+  (let ((it (gethash grp-id attribute-groups)))
+    (if it
+	(llvm-read-error "Attempt to redefine attribute group with id ~a" grp-id)
+	(setf (gethash grp-id attribute-groups)
+	      (list (cons :attrs attrs) (cons :object-index obj-id))))
+    ;; (push grp-id (gethash obj-id attributes-of-objects))
+    ))
+
 (define-block paramattr-group (:on-repeat :error :on-undefined-blocks :error) ; :on-undefined-records :skip)
   ;; Maybe, there's better way to write 3 instead of hardcoding?
-  (records ((grp-entry 3) (id int) (index int) (attrs (parse-rest-with-function #'parse-attrs-lst)))
-	    ;; (:side-effect (add-attr-group-to-current-context (cdr (assoc 'id res))
-	    ;; 						     (cdr (assoc 'index res))
-	    ;; 						     (cdr (assoc 'attrs res))))
+  (records ((grp-entry 3) (id int) (index int) (attrs (parse-rest-with-function #'parse-attrs-lst))
+	    (:side-effect (add-attr-group-to-current-context (cdr (assoc :id res))
+	    						     (cdr (assoc :index res))
+	    						     (cdr (assoc :attrs res)))))
 	   ))
+
+(defun parse-attrs-new (lst)
+  (mapcar (lambda (x)
+	    (if (not (gethash x attribute-groups))
+		(llvm-read-error "Attribute group ~a is not defined in current context." x))
+	    (list :group x))
+	  lst))
+
+(defun append-attrs-to-current-context (lst)
+  (nconc attributes (list lst)))
+
+(define-block paramattr (:on-repeat :error :on-undefined-blocks :error :on-undefined-records :error)
+  (records ;; TODO : actually, enable also the old format of entries
+   ;; (entry-old #'parse-attrs-old
+	   ;; 	      (:side-effect (append-attrs-to-current-context res)))
+   ((entry 2) (parse-rest-with-function #'parse-attrs-new)
+    (:side-effect (append-attrs-to-current-context res))
+    )))
+

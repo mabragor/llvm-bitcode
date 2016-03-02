@@ -129,13 +129,6 @@
 ;; I should have an enclosing context, where all the block numbers are defined together
 
 
-(defun parse-attrs-new (lst)
-  ;; TODO : check that current group id is actually present in the current context?
-  (mapcar (lambda (x)
-	    (list :group x))
-	  lst))
-
-
 (defun parse-raw-attrs (x)
   (let ((attrs1 (funcall (lambda-enum-power-parser
 			  0 (z-ext s-ext no-return in-reg struct-ret no-unwind no-alias by-val next read-none
@@ -183,12 +176,6 @@
 	(collect (list (next elt)
 		       (decode-llvm-attrs-old (next elt))))))
 	  
-(define-block paramattr (:on-repeat :error :on-undefined-blocks :skip :on-undefined-records :skip)
-  (records (entry-old #'parse-attrs-old
-		      (:side-effect (append-attrs-to-current-context res)))
-	   (entry #'parse-attrs-new
-		  (:side-effect (append-attrs-to-current-context res)))))
-
 (defun %parse-alias (x &optional (old-p t))
   (let ((it (mk-iter x)))
     (macrolet ((next! () `(inext-or-error it)))
