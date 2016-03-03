@@ -30,6 +30,8 @@
 
 (defparameter type-table nil)
 
+(defparameter module nil)
+
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
 (define-block module (:on-undefined-blocks :error) ; :on-repeat :error :on-undefined-records :error)
@@ -38,7 +40,8 @@
 	 (attribute-groups (make-hash-table :test #'equal))
 	 (attributes-of-objects (make-hash-table :test #'equal))
 	 (attributes nil)
-	 (type-table (make-array 0)))
+	 (type-table (make-array 0))
+	 (module nil))
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -47,9 +50,11 @@
 	    (:side-effect (cond ((equal 0 (car res)) (setf use-relative-ids nil))
 				((equal 1 (car res)) (setf use-relative-ids t))
 				(t (llvm-read-error "Unsupported LLVM bitcode version: ~a" (car res))))))
+	   (target-triple (parse-rest-with-function #'parse-string-field) ; TODO : what does module->setTargetTriple do?
+			  (:side-effect (setf (getf module :target-triple) (car res))))
+	   (datalayout (parse-rest-with-function #'parse-string-field) ; TODO : what does module->setTargetTriple do?
+		       (:side-effect (setf (getf module :datalayout) (car res))))
 	   ))
-	   ;; (target-triple string) ; TODO : what does module->setTargetTriple do?
-	   ;; (datalayout string)
 	   ;; (asm string)
 	   ;; (section-name string (:side-effect (push (car res) section-table)))
 	   ;; (deplib string)	   
