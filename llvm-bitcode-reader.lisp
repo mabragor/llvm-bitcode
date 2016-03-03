@@ -189,9 +189,27 @@
     (:side-effect (append-attrs-to-current-context res))
     )))
 
+;; TODO : change to array here
 (defun append-type-to-typetable (x)
   (nconc type-table (list x)))
-    
+
+(let ((count 0))
+  ;; TODO : somehow reset count between parses?
+  (defun new-placeholder-struct ()
+    (list :struct-placeholder (incf count))))
+
+(defun get-type-by-id (id)
+  (or (aref type-table id)
+      (setf (aref type-table id) (new-placeholder-struct))))
+
+(defun parse-pointer (lst)
+  (destructuring-bind (elt-type &optional (addr-space 0)) lst
+    (setf elt-type (get-type-by-id elt-type))
+    (if (not (valid-element-type-p elt-type))
+	(llvm-read-error "~a is not a valid type to be pointed at" elt-type))
+    `(,elt-type (:addr-space . ,addr-space))))
+	
+
 (define-block type (:on-repeat :error :on-undefined-blocks :error :on-undefined-records :error)
   ;; TODO : check for matching size of typetable
   (records ((numentry 1) int
@@ -200,23 +218,32 @@
 	   (float)
 	   (double)
 	   (label)
-	   (opaque ...)
+	   (opaque (parse-rest-with-function #'parse-opaque))
 	   ;; TODO : bounds checking for int
 	   (integer int)
-	   (pointer #'parse-pointer)
-	   (function-old ...)
+	   (pointer (parse-rest-with-function #'parse-pointer))
+	   (function-old (vararg bool) (attr-id int) (ret-type #'get-type-by-id)
+			 (arg-types (parse-rest-with-function #'get-arg-types)))
 	   (half)
-	   (array ...)
-	   (vector ...)
+	   (array int #'get-type-by-id
+		  (:side-effect (if (not (valid-element-type-p (cadr res)))
+				    (llvm-read-error "~a is not a valid type for array element" res))))
+	   (vector int #'get-type-by-id
+		   (:side-effect (if (not (valid-element-type-p (cadr res)))
+				     (llvm-read-error "~a is not a valid type for vector element" res))
+				 (if (equal 0 (car res))
+				     (llvm-read-error "Vector length can't be 0"))))
 	   (x86-fp80)
 	   (fp128)
 	   (ppc-fp128)
 	   (metadata)
 	   (x86-mmx)
-	   (struct-anon ...)
-	   (struct-name ...)
-	   (struct-named ...)
-	   (function ...)
+	   (struct-anon (parse-rest-with-function #'parse-struct-anon))
+	   (struct-name ???)
+	   (struct-named (parse-rest-with-function #'parse-named-struct))
+	   ;; TODO : I need the ability to execute custom code, not only side-effect
+	   (function (vararg bool) (ret-type #'get-type-by-id)
+		     (arg-types (parse-rest-with-function #'get-arg-types)))
 	   (token)
 	   ;; This side effect is *common* to all the records in this block
 	   (:side-effect (if (not (eq 'numentry (car it)))
