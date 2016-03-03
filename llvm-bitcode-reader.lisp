@@ -33,6 +33,11 @@
 (defparameter comdat-table nil)
 (defparameter value-table nil)
 (defparameter global-inits nil)
+(defparameter metadata-table nil)
+(defparameter num-module-mds nil)
+(defparameter seen-module-values-record nil)
+(defparameter vst-offset nil)
+(defparameter gc-table nil)
 
 (defun populate-section-table (str)
   (nconc section-table (list str)))
@@ -46,7 +51,10 @@
 	 (attributes-of-objects (make-hash-table :test #'equal))
 	 (attributes nil)
 	 (type-table (make-array 0))
-	 module section-table comdat-table value-table global-inits)
+	 (metadata-table (make-array 0))
+	 (num-module-mds 0)
+	 (vst-offset 0)
+	 module section-table comdat-table value-table global-inits seen-module-values-record gc-table)
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -67,21 +75,26 @@
 	   ((global-var 7) (parse-rest-with-function #'parse-global-var)
 	    (:side-effect (nconc value-table (list res))
 			  (nconc global-inits (list (cons res (cdr (assoc :init-id res)))))))
-	   ))
 	   ;; (function #'parse-function)
 	   ;; (alias-old #'parse-alias-old)
-	   ;; (purge-vals int (:side-effect (setf value-list (subseq value-list 0 (car res)))))
-	   ;; (gc-name string (:side-effect (push (car res) gc-table)))
+	   ((purge-vals 10) int (:side-effect (setf value-table (subseq value-table 0 (car res)))))
+	   (gc-name (parse-rest-with-function #'parse-string-field)
+		    (:side-effect (nconc gc-table (list (car res)))))
 	   ;; (comdat (selection-kind (parse-with-function
 	   ;; 			    (lambda-enum-parser 1 (any exact-match largest no-duplicates same-size))))
 	   ;; 	   (name (parse-rest-with-function #'lengthed-string))
 	   ;; 	   ;; TODO : in C++ there are more side-effects. Should I implement them?
 	   ;; 	   (:side-effect (push res comdat-list)))
-	   ;; (vst-offset int (:side-effect (setf vst-offset (car res))))
+	   ((vst-offset 13) int (:side-effect (setf vst-offset (car res))))
 	   ;; (alias #'parse-alias)
-	   ;; ;; TODO : + some additional consistency checks
-	   ;; (metadata-values int (:side-effect (set metadata-list (make-list (car res) nil))))
-	   ;; (source-filename string)))
+	   ;; TODO : + some additional consistency checks
+	   ((metadata-values 15) int (:side-effect (setf num-module-mds (car res)
+							 seen-module-values-record t
+							 metadata-table (adjust-array metadata-table
+										      num-module-mds
+										      :initial-element nil))))
+	   (source-filename (parse-rest-with-function #'parse-string-field)
+			    (:side-effect (setf (getf module :source-fname) (car res))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-enum-alist (specs)
