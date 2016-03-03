@@ -211,46 +211,6 @@
 (defun parse-alias-old (x)
   (%parse-alias x t))
 
-(defun parse-global-var (x)
-  (destructuring-bind (type pre-addr-space init-id raw-linkage
-			    alignment section &optional (visibility 'default) thread-local
-			    unnamed-addr external-init dll-storage comdat) x
-    (let (constant addr-space linkage)
-      (setf type (type-by-id type))
-      (when (not (zerop (boole boole-and pre-addr-space 1)))
-	(setf constant t))
-      (if (not (zerop (boole boole-and pre-addr-space 1)))
-	  (setf addr-space (ash it -2))
-	  (setf addr-space (get-addr-space type)
-		type (get-element-type type)))
-      (setf alignment (parse-alignment aligment)
-	    linkage (decode-linkage raw-linkage)
-	    visibility (if (eq 'local linkage)
-			   (let ((it (decode-visibility visibility)))
-			     (if (not (eq 'default it))
-				 (llvm-read-error "Visibility for local linkage should be default, but got: ~a"
-						  it)
-				 it))
-			   (decode-visibility visibility))
-	    thread-local (decode-thread-local thread-local)
-	    unnamed-addr (decode-binary unnamed-addr)
-	    external-init (decode-binary external-init)
-	    section (get-section-from-id section)
-	    dll-storage (if dll-storage
-			    (decode-dll-storage dll-storage)
-			    (upgrade-import-export-linkage raw-linkage))
-	    comdat (if comdat
-		       (get-comdat-from-id comdat)
-		       (if (has-implicit-comdat raw-linkage)
-			   1 ; TODO : I don't understand why this should be so
-			   )))
-      ;; TODO : change for insert kwd if nonnil or something
-      `((:type . ,type) (:addr-space . ,addr-space) (:constant . ,constant)
-	(:linkage . ,linkage) (:alignment . ,alignment)
-	(:section . ,section) (:visibility . ,visibility) (:thread-local . ,thread-local)
-	(:unnamed-addr . ,unnamed-addr) (:external-init . ,external-init)
-	(:dll-storage . ,dll-storage) (:comdat . ,comdat)))))
-
 (defun parse-function (x)
   (destructuring-bind (type call-conv is-proto raw-linkage attributes alignment
 			    section visibility

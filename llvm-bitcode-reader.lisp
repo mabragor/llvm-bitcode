@@ -27,10 +27,15 @@
 (defparameter attribute-groups nil)
 (defparameter attributes-of-objects nil)
 (defparameter attributes nil)
-
 (defparameter type-table nil)
-
 (defparameter module nil)
+(defparameter section-table nil)
+(defparameter comdat-table nil)
+(defparameter value-table nil)
+(defparameter global-inits nil)
+
+(defun populate-section-table (str)
+  (nconc section-table (list str)))
 
 ;; TODO : numbers (codes) of blocks are defined elsewhere
 ;; TODO : global cleanup upon exit from this routine
@@ -41,7 +46,7 @@
 	 (attributes-of-objects (make-hash-table :test #'equal))
 	 (attributes nil)
 	 (type-table (make-array 0))
-	 (module nil))
+	 module section-table comdat-table value-table global-inits)
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -50,15 +55,19 @@
 	    (:side-effect (cond ((equal 0 (car res)) (setf use-relative-ids nil))
 				((equal 1 (car res)) (setf use-relative-ids t))
 				(t (llvm-read-error "Unsupported LLVM bitcode version: ~a" (car res))))))
-	   (target-triple (parse-rest-with-function #'parse-string-field) ; TODO : what does module->setTargetTriple do?
+	   (target-triple (parse-rest-with-function #'parse-string-field)
 			  (:side-effect (setf (getf module :target-triple) (car res))))
-	   (datalayout (parse-rest-with-function #'parse-string-field) ; TODO : what does module->setTargetTriple do?
+	   (datalayout (parse-rest-with-function #'parse-string-field)
 		       (:side-effect (setf (getf module :datalayout) (car res))))
+	   (asm (parse-rest-with-function #'parse-string-field)
+		(:side-effect (setf (getf module :inline-asm) (car res))))
+	   (section-name (parse-rest-with-function #'parse-string-field)
+			 (:side-effect (populate-section-table (car res))))
+	   (deplib (parse-rest-with-function #'parse-string-field))
+	   ((global-var 7) (parse-rest-with-function #'parse-global-var)
+	    (:side-effect (nconc value-table (list res))
+			  (nconc global-inits (list (cons res (cdr (assoc :init-id res)))))))
 	   ))
-	   ;; (asm string)
-	   ;; (section-name string (:side-effect (push (car res) section-table)))
-	   ;; (deplib string)	   
-	   ;; (global-var #'parse-global-var)
 	   ;; (function #'parse-function)
 	   ;; (alias-old #'parse-alias-old)
 	   ;; (purge-vals int (:side-effect (setf value-list (subseq value-list 0 (car res)))))
@@ -85,7 +94,7 @@
 (defmacro define-enum-parser (name kwds &body enums)
   ;; TODO : this should expand into parser definition
   `(let ((alist ',(make-enum-alist enums)))
-     (defun ,(intern #?"PARSE-$(name)") (x)
+     (defun ,name (x)
        (let ((it (assoc (int<- x) alist :test #'equal)))
 	 (if it
 	     (cdr it)
@@ -94,7 +103,7 @@
 		       `(quote ,default)
 		       `(llvm-read-error "Expected enum from ~a, but got ~a" alist x))))))))
 
-(define-enum-parser attribute-kind (:default none)
+(define-enum-parser parse-attribute-kind (:default none)
   (alignment 1) always-inline by-val inline-hint in-reg
   min-size naked nest no-alias no-builtin no-capture
   no-duplicate no-implicit-float no-inline non-lazy-bind
@@ -341,3 +350,100 @@
    (:record ((code . 7) (fields 64))) ;                                 i64 -- index 10
    (:record ((code . 2) (fields))) ;                                    void -- index 11
    ))
+
+(defun get-addr-space (type)
+  (if (not (eq :pointer (car type)))
+      (llvm-read-error "Attempt to get addrspace of not-pointer type: ~a" type))
+  (or (cdr (find-if (lambda (x)
+		      (and (consp x)
+			   (eq :addr-space (car x))))
+		    (cadr type)))
+      0))
+
+(defun get-element-type (type)
+  (if (not (eq :pointer (car type)))
+      (llvm-read-error "Attempt to get underlying type of not-pointer type: ~a" type))
+  (or (caadr type)
+      (llvm-read-error "Somehow underlying type of pointer type ~a is NIL" type)))
+
+(defun parse-alignment (x)
+  "Note from C++: Alignment in bitcode files is incremented by 1, so that zero
+can be used for default alignment."
+  ;; TODO : check for maximum alignment value
+  (ash 1 (1- (int<- x))))
+
+
+(defun parse-global-var (lst)
+  (destructuring-bind (type pre-addr-space init-id raw-linkage
+			    alignment section &optional (visibility 'default) thread-local
+			    unnamed-addr external-init dll-storage comdat) lst
+    (let (constant addr-space linkage)
+      (setf type (get-type-by-id type))
+      (when (not (zerop (boole boole-and pre-addr-space 1)))
+	(setf constant t))
+      (if (not (zerop (boole boole-and pre-addr-space 2)))
+	  (setf addr-space (ash pre-addr-space -2))
+	  (setf addr-space (get-addr-space type)
+		type (get-element-type type)))
+      (setf alignment (parse-alignment alignment)
+	    linkage (decode-linkage raw-linkage)
+	    visibility (if (eq 'local linkage)
+			   (let ((it (decode-visibility visibility)))
+			     (if (not (eq 'default it))
+				 (llvm-read-error "Visibility for local linkage should be default, but got: ~a"
+						  it)
+				 it))
+			   (decode-visibility visibility))
+	    thread-local (decode-thread-local thread-local)
+	    unnamed-addr (bool<- unnamed-addr)
+	    external-init (bool<- external-init)
+	    section (get-section-from-id section)
+	    dll-storage (if dll-storage
+			    (decode-dll-storage dll-storage)
+			    (upgrade-import-export-linkage raw-linkage))
+	    comdat (if comdat
+		       (get-comdat-from-id comdat)
+		       (if (has-implicit-comdat linkage)
+			   1 ; TODO : I don't understand why this should be so
+			   )))
+      ;; TODO : change for insert kwd if nonnil or something
+      `((:init-id . ,init-id) (:type . ,type) (:addr-space . ,addr-space) (:constant . ,constant)
+	(:linkage . ,linkage) (:alignment . ,alignment)
+	(:section . ,section) (:visibility . ,visibility) (:thread-local . ,thread-local)
+	(:unnamed-addr . ,unnamed-addr) (:external-init . ,external-init)
+	(:dll-storage . ,dll-storage) (:comdat . ,comdat)))))
+
+
+(define-enum-parser decode-linkage (:default external)
+  (external 0) weak-any (appending 2) internal link-once-any
+  (external 5) external ; yep, it's not one-to-one
+  external-weak common private weak-odr link-once-odr (available-externally 12)
+  private private external weak-any weak-odr link-once-any
+  link-once-odr)
+
+(define-enum-parser decode-visibility (:default default)
+  (default 0) hidden protected)
+
+(define-enum-parser decode-thread-local (:default general-dynamic)
+  (not-thread-local 0) general-dynamic local-dynamic initial-exec local-exec)
+
+(define-enum-parser decode-dll-storage (:default default)
+  (default 0) import export)
+
+(define-enum-parser upgrade-import-export-linkage ()
+  (import 5) export)
+
+(defun get-section-from-id (id)
+  (if (not (zerop id))
+      (or (nth (1- id) section-table)
+	  (llvm-read-error "Section table index out of bounds: ~a" (1- id)))))
+
+(defun get-comdat-from-id (id)
+  (if (not (zerop id))
+      (or (nth (1- id) comdat-table)
+	  (llvm-read-error "Comdat table index out of bounds: ~a" (1- id)))))
+
+(defun has-implicit-comdat (linkage)
+  (member linkage '(weak-any link-once-any weak-odr-linkage link-once-odr)))
+      
+  
