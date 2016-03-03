@@ -34,11 +34,13 @@
 
   (defparameter block-parser-stash (make-hash-table :test #'eq)))
 
-(defun parse-string-field (x)
-  (if (eq :array (car x))
-      (coerce (cadr x) 'string)
-      (error "Don't know how to parse this as string: ~a" x)))
-      
+(defun parse-string-field (lst)
+  (coerce (mapcar (lambda (x)
+		    (if (characterp x)
+			x
+			(code-char x)))
+		  lst)
+	  'string))
 
 (defun element-cons-parser-code (spec)
   (or (case (car spec)
@@ -48,6 +50,7 @@
   
 (defun element-atom-parser-code (spec)
   (cond ((eq 'int spec)  `(int<- (car cur)))
+	((eq 'bool spec)  `(bool<- (car cur)))
 	((eq 'string spec) `(parse-string-field (car cur)))
 	(t (error "Don't know how to understand this atom record parser spec: ~a" spec))))
 
@@ -88,8 +91,7 @@
 			      res)
 			,(element-advancer-code (cadr spec))))))))
 
-(defun! make-record-parser (specs name id)
-  (declare (ignorable id))
+(defun! make-record-parser (specs name common-side-effect)
   (let (side-effect)
     (declare (special side-effect))
     (let ((expanded-specs (mapcar #'mk-element-parser-code specs)))
@@ -97,12 +99,14 @@
 	 (declare (ignorable type))
 	 (let (res
 	       (cur (cdr (assoc 'fields form))))
+	   (declare (ignorable cur))
 	   ;; TODO : check that lengths match
 	   ,@expanded-specs
 	   (setf res (nreverse res))
 	   ,@side-effect
-	   ;; (nreverse res)
-	   (cons ,(intern (string name) "KEYWORD") res))))))
+	   (let ((it (cons ,(intern (string name) "KEYWORD") res)))
+	     ,@common-side-effect
+	     it))))))
 
 (defun find-cons-pos (tree sym)
   "Find first cons in TREE, whose CAR is EQ to SYM"
@@ -152,14 +156,17 @@
 			  (setf (gethash 'default it) ,(if (key :on-undefined-records)
 							   `#',(intern #?"$((key :on-undefined-records))-RECORD-PARSER")
 							   `#'default-record-parser))
-			  ,@(iter (with i = 0)
-				  (for rec-spec in (cdr (assoc 'records specs)))
-				  (destructuring-bind (name id) (if (atom (car rec-spec))
-								    (list (car rec-spec) (incf i))
-								    (list (caar rec-spec)
-									  (setf i (cadar rec-spec))))
-				    (collect `(setf (gethash ,id it)
-						    ,(make-record-parser (cdr rec-spec) name id)))))
+			  ,@(let ((side-effect (cdr (assoc :side-effect (cdr (assoc 'records specs))))))
+				 (iter (with i = 0)
+				       (for rec-spec in (cdr (assoc 'records specs)))
+				       (if (eq :side-effect (car rec-spec))
+					   (next-iteration))
+				       (destructuring-bind (name id) (if (atom (car rec-spec))
+									 (list (car rec-spec) (incf i))
+									 (list (caar rec-spec)
+									       (setf i (cadar rec-spec))))
+					 (collect `(setf (gethash ,id it)
+							 ,(make-record-parser (cdr rec-spec) name side-effect))))))
 			  it)))
 		   ,g!-sub-body))))
       (values res (find-cons-pos res g!-sub-body)))))

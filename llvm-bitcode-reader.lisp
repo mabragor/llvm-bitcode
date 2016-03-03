@@ -15,7 +15,7 @@
 
 ;; Maybe ERRORing is the default behavior -- I shouldn't explicitly write it down
 (define-block identification (:on-undefined-blocks :error :on-undefined-records :error)
-  (records (string string)
+  (records (string (parse-rest-with-function #'parse-string-field))
 	   (epoch int)))
 
 (define-toplevel-parser (:on-undefined-blocks :error :on-undefined-records :error)
@@ -190,8 +190,14 @@
     )))
 
 ;; TODO : change to array here
-(defun append-type-to-typetable (x)
-  (nconc type-table (list x)))
+(defun append-type-to-type-table (x)
+  (declare (special type-table num-records))
+  (if (aref type-table num-records)
+      (llvm-read-error "Attempt to insert type ~a in place of something forward-referenced: ~a"
+		       x (aref type-table num-records)))
+  (setf (aref type-table num-records) x)
+  (incf num-records)
+  :success)
 
 (let ((count 0))
   ;; TODO : somehow reset count between parses?
@@ -209,11 +215,73 @@
 	(llvm-read-error "~a is not a valid type to be pointed at" elt-type))
     `(,elt-type (:addr-space . ,addr-space))))
 	
+(defparameter type-name nil)
 
-(define-block type (:on-repeat :error :on-undefined-blocks :error :on-undefined-records :error)
+(defun bool<- (x)
+  (not (zerop (int<- x))))
+
+(defun parse-struct-named (lst)
+  (declare (special type-table num-records))
+  (destructuring-bind (packed &rest elt-types) lst
+    (setf packed (bool<- packed))
+    (let ((res nil)
+	  (it (aref type-table num-records)))
+      (if (and it (eq :struct-placeholder (car it)))
+	  (setf res it)
+	  (setf res (new-placeholder-struct)
+		(aref type-table num-records) res))
+      (incf num-records)
+      (setf (car res) :struct-named)
+      ;; TODO : apparently, this does something strange w.r.t head of the list
+      (nconc res (list (cons :name type-name)
+		       (cons :packed packed)
+		       (cons :elts (mapcar #'get-type-by-id elt-types))))
+      (setf type-name nil)
+      res)))
+      
+(defun parse-opaque (lst)
+  (declare (ignore lst) (special type-table num-records type-name))
+  (let ((res nil)
+	(it (aref type-table num-records)))
+    (if (and it (eq :struct-placeholder (car it)))
+	(setf res it)
+	(setf res (new-placeholder-struct)
+	      (aref type-table num-records) res))
+    (incf num-records)
+    (setf (car res) :opaque)
+    ;; TODO : apparently, this does something strange w.r.t head of the list
+    (nconc res (list (cons :name type-name)))
+    (setf type-name nil)
+    res))
+
+(defun valid-element-type-p (x)
+  (declare (ignore x))
+  t)
+
+(defun valid-arg-type-p (x)
+  (declare (ignore x))
+  t)
+
+(defun get-types-by-id (lst)
+  (mapcar #'get-type-by-id lst))
+
+(defun get-arg-types (lst)
+  (mapcar (lambda (x)
+	    (let ((it (get-type-by-id x)))
+	      (if (valid-arg-type-p it)
+		  it
+		  (llvm-read-error "Type ~a is not valid argument type" it))))
+	  lst))
+
+
+(define-block type (:on-repeat :error :on-undefined-blocks :error) ; :on-undefined-records :error)
   ;; TODO : check for matching size of typetable
+  (:around (let ((type-name nil)
+		 (num-records 0))
+	     (declare (special type-name num-records type-name))
+	     sub-body))
   (records ((numentry 1) int
-	    (:side-effect (setf type-table (adjust-array type-table (car res)))))
+	    (:side-effect (setf type-table (adjust-array type-table (car res) :initial-element nil))))
 	   (void)
 	   (float)
 	   (double)
@@ -238,15 +306,33 @@
 	   (ppc-fp128)
 	   (metadata)
 	   (x86-mmx)
-	   (struct-anon (parse-rest-with-function #'parse-struct-anon))
-	   (struct-name ???)
-	   (struct-named (parse-rest-with-function #'parse-named-struct))
+	   (struct-anon (packed bool) (elt-types (parse-rest-with-function #'get-types-by-id)))
+	   (struct-name (parse-rest-with-function #'parse-string-field)
+			(:side-effect (setf type-name (car res))))
+	   (struct-named (parse-rest-with-function #'parse-struct-named))
 	   ;; TODO : I need the ability to execute custom code, not only side-effect
 	   (function (vararg bool) (ret-type #'get-type-by-id)
-		     (arg-types (parse-rest-with-function #'get-arg-types)))
-	   (token)
+	   	     (arg-types (parse-rest-with-function #'get-arg-types)))
+	   ((token 22))
 	   ;; This side effect is *common* to all the records in this block
-	   (:side-effect (if (not (eq 'numentry (car it)))
+	   (:side-effect (if (not (find (car it) '(:numentry :struct-name :struct-named :opaque) :test #'eq))
 			     (append-type-to-type-table it)))))
 
   
+;; OK, let's manually go through this type-table block
+#+nil
+(:block 17 ; type-table block
+  ((:record ((code . 1) (fields 12))) ;                                 numelts 12
+   (:record ((code . 7) (fields 8))) ;                                  i8 -- index 0
+   (:record ((code . 11) (abbrev-id . 9) (fields #*0001101 0))) ;       [13 x i8] -- index 1
+   (:record ((code . 8) (abbrev-id . 4) (fields 1 0))) ;                [13 x i8]* (addrspace 0) -- index 2
+   (:record ((code . 7) (fields 32))) ;                                 i32 -- index 3
+   (:record ((code . 21) (abbrev-id . 5) (fields 0 (:array (3))))) ;    i32 () -- index 4
+   (:record ((code . 8) (abbrev-id . 4) (fields 4 0))) ;                (i32 ())* -- index 5
+   (:record ((code . 8) (abbrev-id . 4) (fields 0 0))) ;                i8* -- index 6
+   (:record ((code . 21) (abbrev-id . 5) (fields 0 (:array (3 6))))) ;  i32 (i8*) -- index 7
+   (:record ((code . 8) (abbrev-id . 4) (fields 7 0))) ;                (i32 (i8*))* -- index 8
+   (:record ((code . 16) (fields))) ;                                   metadata -- index 9
+   (:record ((code . 7) (fields 64))) ;                                 i64 -- index 10
+   (:record ((code . 2) (fields))) ;                                    void -- index 11
+   ))

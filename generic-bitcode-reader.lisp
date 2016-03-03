@@ -301,6 +301,19 @@
 
 ;; TODO : patch QUASIQUOTE-2.0, so that it actually understands .,
 
+(defun flatten-out-arrays-and-blobs (lst)
+  (let (res)
+    (labels ((rec (lst)
+	       (iter (for elt in lst)
+		     (if (consp elt)
+			 (cond ((eq :array (car elt)) (rec (cadr elt)))
+			       ((eq :blob (car elt)) (rec (cadr elt)))
+			       (t (push elt res)))
+			 (push elt res)))))
+			     
+      (rec lst))
+    (nreverse res)))
+
 (defun lexer-advance ()
   "On successful invocations returns primitives of the stream.
 They are used to modify reader's state on the higher level."
@@ -309,7 +322,7 @@ They are used to modify reader's state on the higher level."
     (let ((it (funcall (get-handler code))))
       `(:abbrev-record (,(cons 'code (car it))
 			 ,(cons 'abbrev-id code)
-			 ,(cons 'fields (cdr it)))))))
+			 ,(cons 'fields (flatten-out-arrays-and-blobs (cdr it))))))))
 
 (defun skip-block (len-in-32-bits)
   (iter (for i from 1 to len-in-32-bits)
