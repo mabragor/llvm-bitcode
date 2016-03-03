@@ -38,6 +38,8 @@
 (defparameter seen-module-values-record nil)
 (defparameter vst-offset nil)
 (defparameter gc-table nil)
+(defparameter comdat-table nil)
+(defparameter comdat-map nil)
 
 (defun populate-section-table (str)
   (nconc section-table (list str)))
@@ -49,12 +51,13 @@
    (let ((use-relative-ids nil)
 	 (attribute-groups (make-hash-table :test #'equal))
 	 (attributes-of-objects (make-hash-table :test #'equal))
+	 (comdat-map (make-hash-table :test #'equal))
 	 (attributes nil)
 	 (type-table (make-array 0))
 	 (metadata-table (make-array 0))
 	 (num-module-mds 0)
 	 (vst-offset 0)
-	 module section-table comdat-table value-table global-inits seen-module-values-record gc-table)
+	 module section-table value-table global-inits seen-module-values-record gc-table)
      sub-body))
   (blocks paramattr paramattr-group type value-symtab
 	  constants metadata metadata-kind function use-list operand-bundle-tags)
@@ -80,11 +83,11 @@
 	   ((purge-vals 10) int (:side-effect (setf value-table (subseq value-table 0 (car res)))))
 	   (gc-name (parse-rest-with-function #'parse-string-field)
 		    (:side-effect (nconc gc-table (list (car res)))))
-	   ;; (comdat (selection-kind (parse-with-function
-	   ;; 			    (lambda-enum-parser 1 (any exact-match largest no-duplicates same-size))))
-	   ;; 	   (name (parse-rest-with-function #'lengthed-string))
-	   ;; 	   ;; TODO : in C++ there are more side-effects. Should I implement them?
-	   ;; 	   (:side-effect (push res comdat-list)))
+	   (comdat (parse-rest-with-function #'parse-comdat)
+		   ;; COMDATs are singletons, apparently.
+	   	   (:side-effect (let ((it (get-or-insert-comdat (cdr (assoc :name res)))))
+				   (setf (cdr (assoc :selection-kind it)) (cdr (assoc :selection-kind res)))
+				   (nconc comdat-table (list it)))))
 	   ((vst-offset 13) int (:side-effect (setf vst-offset (car res))))
 	   ;; (alias #'parse-alias)
 	   ;; TODO : + some additional consistency checks
@@ -459,4 +462,17 @@ can be used for default alignment."
 (defun has-implicit-comdat (linkage)
   (member linkage '(weak-any link-once-any weak-odr-linkage link-once-odr)))
       
-  
+(define-enum-parser decode-selection-kind ()
+  (any 1) exact-match largest no-duplicates same-size)
+
+(defun parse-comdat (lst)
+  (destructuring-bind (selection-kind size &rest name) lst
+    (setf selection-kind (decode-selection-kind selection-kind)
+	  name (parse-string-field (subseq name 0 size)))
+    `((:name . ,name) (:selection-kind . ,selection-kind))))
+
+(defun get-or-insert-comdat (name)
+  (or (gethash name comdat-map)
+      (setf (gethash name comdat-map)
+	    (list (cons :name name) (cons :selection-kind :unknown)))))
+      
